@@ -203,8 +203,9 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
                     iv_rank:              0.0,
                     delta:                0.0,
                     dte_at_entry:         0,
-                    pending_order_id:     Some(order.id),
-                    force_exit_next_open: false,
+                    pending_order_id:           Some(order.id),
+                    pending_close_order_id:     None,
+                    force_exit_next_open:       false,
                 };
                 state.open_positions.lock().await.insert(leg.contract.clone(), meta);
             }

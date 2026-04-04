@@ -2,6 +2,7 @@ mod db;
 mod exit_monitor;
 mod ipc;
 mod iv_rank;
+mod order_poller;
 mod orders;
 mod pdt;
 mod risk;
@@ -32,7 +33,10 @@ pub struct OpenPositionMeta {
     pub iv_rank:               f64,
     pub delta:                 f64,
     pub dte_at_entry:          u32,
+    /// Order ID of the pending entry order (cleared once filled).
     pub pending_order_id:      Option<String>,
+    /// Order ID of a pending close order (set when exit monitor submits close).
+    pub pending_close_order_id: Option<String>,
     pub force_exit_next_open:  bool,
 }
 

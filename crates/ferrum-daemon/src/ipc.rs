@@ -23,6 +23,7 @@ pub async fn run_server(state: Arc<AppState>) -> Result<(), ferrum_core::error::
     // Spawn background tasks.
     tokio::spawn(crate::strategy::fill_sync_task(state.clone()));
     tokio::spawn(exit_monitor::run_exit_monitor(state.clone()));
+    tokio::spawn(crate::order_poller::run_order_poller(state.clone()));
 
     // Graceful shutdown via SIGINT / SIGTERM.
     let state_shutdown = state.clone();

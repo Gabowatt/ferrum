@@ -41,6 +41,19 @@ pub async fn submit_limit_order(
     client.post::<_, AlpacaOrder>("/v2/orders", &req).await
 }
 
+/// Fetch a single order by ID.
+pub async fn get_order(
+    client: &AlpacaClient,
+    order_id: &str,
+) -> Result<AlpacaOrder, FerrumError> {
+    client.get(&format!("/v2/orders/{order_id}")).await
+}
+
+/// Fetch all open orders.
+pub async fn get_open_orders(client: &AlpacaClient) -> Result<Vec<AlpacaOrder>, FerrumError> {
+    client.get_with_query("/v2/orders", &[("status", "open"), ("limit", "100")]).await
+}
+
 pub async fn cancel_order(
     client: &AlpacaClient,
     order_id: &str,
