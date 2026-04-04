@@ -10,6 +10,16 @@ use ratatui::{
 use ferrum_core::types::{BotStatus, LogEvent, LogLevel};
 use crate::app::App;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn pdt_color(used: u32, max: u32) -> Color {
+    if max == 0 { return Color::DarkGray; }
+    let ratio = used as f32 / max as f32;
+    if ratio >= 1.0      { Color::Red    }
+    else if ratio >= 0.67 { Color::Yellow }
+    else                  { Color::Green  }
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     if !app.daemon_online {
         draw_offline(f);
@@ -64,12 +74,19 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         BotStatus::Stopping => Color::Red,
     };
     let time = Local::now().format("%H:%M:%S").to_string();
+    let pdt_col = pdt_color(app.pdt_used, app.pdt_max);
     let text = Line::from(vec![
         Span::styled(" ferrum ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(format!("[{}]", app.mode), Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("●", Style::default().fg(status_color)),
         Span::raw(format!(" {}  ", app.bot_status)),
+        Span::raw("PDT: "),
+        Span::styled(
+            format!("{}/{}", app.pdt_used, app.pdt_max),
+            Style::default().fg(pdt_col),
+        ),
+        Span::raw("  "),
         Span::styled(time, Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(text), area);
@@ -78,17 +95,51 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // Positions panel (placeholder — live positions require /v2/positions call wired in later)
-    let pos_block = Block::default().borders(Borders::ALL).title(" Positions ");
-    let pos_text = Paragraph::new("  (no open positions)")
-        .block(pos_block)
-        .style(Style::default().fg(Color::DarkGray));
-    f.render_widget(pos_text, cols[0]);
+    // ── Positions panel ───────────────────────────────────────────────────────
+    let pos_block = Block::default().borders(Borders::ALL).title(format!(
+        " Positions ({}) ", app.positions.len()
+    ));
 
-    // PnL panel
+    if app.positions.is_empty() {
+        let pos_text = Paragraph::new("  (no open positions)")
+            .block(pos_block)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(pos_text, cols[0]);
+    } else {
+        let items: Vec<ListItem> = app.positions.iter().take(4).map(|pos| {
+            let pnl_pct  = pos.unrealized_plpc * 100.0;
+            let pnl_color = if pnl_pct >= 0.0 { Color::Green } else { Color::Red };
+            let dir_color = if pos.direction == "call" { Color::Cyan } else { Color::Magenta };
+            // Shorten contract: last 15 chars
+            let contract_short = if pos.contract.len() > 18 {
+                &pos.contract[pos.contract.len() - 18..]
+            } else {
+                &pos.contract
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{:<18}", contract_short),
+                    Style::default().fg(dir_color),
+                ),
+                Span::raw(format!(" x{:.0}  @{:.2}  ", pos.qty, pos.entry_price)),
+                Span::styled(
+                    format!("{:+.1}%", pnl_pct),
+                    Style::default().fg(pnl_color),
+                ),
+                Span::styled(
+                    format!(" ({:+.0})", pos.unrealized_pl),
+                    Style::default().fg(pnl_color),
+                ),
+            ]))
+        }).collect();
+        f.render_widget(List::new(items).block(pos_block), cols[0]);
+    }
+
+    // ── PnL panel ─────────────────────────────────────────────────────────────
     let pnl_color = |v: f64| if v >= 0.0 { Color::Green } else { Color::Red };
     let pnl_lines = vec![
         Line::from(vec![

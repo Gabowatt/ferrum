@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use ferrum_core::types::{BotStatus, FillRecord, LogEvent};
+use ferrum_core::types::{BotStatus, FillRecord, LogEvent, Position};
 
 pub const LOG_RING_SIZE: usize = 500;
 
@@ -13,6 +13,9 @@ pub struct App {
     pub pnl_year:  f64,
 
     pub fills:      Vec<FillRecord>,
+    pub positions:  Vec<Position>,
+    pub pdt_used:   u32,
+    pub pdt_max:    u32,
     pub log_events: VecDeque<LogEvent>,
 
     pub log_scroll:  usize,
@@ -30,6 +33,9 @@ impl App {
             pnl_month:     0.0,
             pnl_year:      0.0,
             fills:         Vec::new(),
+            positions:     Vec::new(),
+            pdt_used:      0,
+            pdt_max:       3,
             log_events:    VecDeque::new(),
             log_scroll:    0,
             tail_follow:   true,

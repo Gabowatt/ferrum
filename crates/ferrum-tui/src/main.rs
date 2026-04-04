@@ -67,6 +67,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     app.pnl_month = month;
                     app.pnl_year  = year;
                 }
+                if let Ok(positions) = client.request_positions().await {
+                    app.positions = positions;
+                }
+                if let Ok((used, max)) = client.request_pdt().await {
+                    app.pdt_used = used;
+                    app.pdt_max  = max;
+                }
             }
         } else {
             // Retry connection.

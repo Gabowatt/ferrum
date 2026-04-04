@@ -3,7 +3,7 @@ use tokio::{
     net::UnixStream,
 };
 use std::collections::VecDeque;
-use ferrum_core::types::{IpcCommand, IpcResponse, LogEvent};
+use ferrum_core::types::{IpcCommand, IpcResponse, LogEvent, Position};
 
 const SOCK_PATH: &str = "/tmp/ferrum.sock";
 
@@ -59,6 +59,20 @@ impl IpcClient {
 
     pub async fn send_stop(&mut self) -> Result<IpcResponse, Box<dyn std::error::Error>> {
         self.send_cmd(IpcCommand::Stop).await
+    }
+
+    pub async fn request_positions(&mut self) -> Result<Vec<Position>, Box<dyn std::error::Error>> {
+        match self.send_cmd(IpcCommand::GetPositions).await? {
+            IpcResponse::Positions { positions } => Ok(positions),
+            other => Err(format!("unexpected response: {other:?}").into()),
+        }
+    }
+
+    pub async fn request_pdt(&mut self) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+        match self.send_cmd(IpcCommand::GetPdt).await? {
+            IpcResponse::PdtStatus { used, max } => Ok((used, max)),
+            other => Err(format!("unexpected response: {other:?}").into()),
+        }
     }
 
     /// Drain any buffered log events.
