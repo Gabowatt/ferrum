@@ -44,6 +44,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
         app.daemon_online = false;
     }
 
+    let mut last_clock_poll = std::time::Instant::now()
+        - std::time::Duration::from_secs(61); // force fetch on first tick
+
     loop {
         // Poll daemon for state updates every 500ms.
         if let Some(ref mut client) = ipc {
@@ -75,9 +78,12 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     app.pdt_used = used;
                     app.pdt_max  = max;
                 }
-                if let Ok((is_open, next_change)) = client.request_market_clock().await {
-                    app.market_open        = Some(is_open);
-                    app.market_next_change = next_change;
+                if last_clock_poll.elapsed() >= std::time::Duration::from_secs(60) {
+                    if let Ok((is_open, next_change)) = client.request_market_clock().await {
+                        app.market_open        = Some(is_open);
+                        app.market_next_change = next_change;
+                    }
+                    last_clock_poll = std::time::Instant::now();
                 }
             }
         } else {
