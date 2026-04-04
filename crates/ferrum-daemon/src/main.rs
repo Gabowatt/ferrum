@@ -1,6 +1,8 @@
 mod db;
+mod exit_monitor;
 mod ipc;
 mod iv_rank;
+mod orders;
 mod pdt;
 mod risk;
 mod strategy;
@@ -16,14 +18,33 @@ use ferrum_core::{
     types::{BotStatus, LogEvent},
 };
 
+/// In-memory metadata for a position we have opened.
+#[derive(Debug, Clone)]
+pub struct OpenPositionMeta {
+    pub contract:              String,
+    pub underlying:            String,
+    pub direction:             String,
+    pub opened_at:             chrono::DateTime<chrono::Utc>,
+    pub entry_price:           f64,
+    pub qty:                   u32,
+    pub confluence_score:      u32,
+    pub regime:                String,
+    pub iv_rank:               f64,
+    pub delta:                 f64,
+    pub dte_at_entry:          u32,
+    pub pending_order_id:      Option<String>,
+    pub force_exit_next_open:  bool,
+}
+
 #[derive(Debug)]
 pub struct AppState {
-    pub config:  AppConfig,
-    pub client:  AlpacaClient,
-    pub status:  Mutex<BotStatus>,
-    pub log_tx:  broadcast::Sender<LogEvent>,
-    pub db:      db::Database,
-    pub pdt:     Mutex<pdt::PdtTracker>,
+    pub config:         AppConfig,
+    pub client:         AlpacaClient,
+    pub status:         Mutex<BotStatus>,
+    pub log_tx:         broadcast::Sender<LogEvent>,
+    pub db:             db::Database,
+    pub pdt:            Mutex<pdt::PdtTracker>,
+    pub open_positions: Mutex<std::collections::HashMap<String, OpenPositionMeta>>,
 }
 
 #[tokio::main]
@@ -80,10 +101,11 @@ async fn main() -> Result<(), FerrumError> {
     let state = Arc::new(AppState {
         config,
         client,
-        status: Mutex::new(BotStatus::Idle),
-        log_tx: log_tx.clone(),
+        status:         Mutex::new(BotStatus::Idle),
+        log_tx:         log_tx.clone(),
         db,
-        pdt: Mutex::new(pdt_tracker),
+        pdt:            Mutex::new(pdt_tracker),
+        open_positions: Mutex::new(std::collections::HashMap::new()),
     });
 
     let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
