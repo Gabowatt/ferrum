@@ -50,6 +50,12 @@ Replace the fixed +40% profit target with a smarter exit system:
 - Block if count >= max_sector_positions
 
 ### 3. Export [E] keybinding in TUI
+
+### 4. TUI privacy toggles
+- `[P]` key — toggle PnL panel visibility (hide today/month/year values, show `****`)
+- `[B]` key — toggle buying power panel in positions area: show free cash + used margin
+  (free: available buying power, used: sum of open position market values)
+- Useful when screen-sharing or recording
 - Wire TUI `[E]` key to call `ferrum-export` binary
 - Date range picker modal → write CSV to `~/ferrum-export-YYYY.csv`
 
