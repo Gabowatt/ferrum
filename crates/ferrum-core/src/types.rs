@@ -91,6 +91,8 @@ pub enum IpcCommand {
     ToggleMode { mode: String },
     GetPnl { period: String },
     GetFills,
+    GetPositions,
+    GetPdt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,8 +114,31 @@ pub enum IpcResponse {
     Fills {
         fills: Vec<FillRecord>,
     },
+    Positions {
+        positions: Vec<Position>,
+    },
+    PdtStatus {
+        used: u32,
+        max:  u32,
+    },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),
+}
+
+// ── Position ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub contract:        String,
+    pub underlying:      String,
+    pub direction:       String,   // "call" or "put"
+    pub qty:             f64,
+    pub entry_price:     f64,
+    pub current_price:   f64,
+    pub market_value:    f64,
+    pub unrealized_pl:   f64,
+    pub unrealized_plpc: f64,   // as fraction e.g. 0.15 = 15%
+    pub opened_at:       DateTime<Utc>,
 }
 
 // ── Fill records ──────────────────────────────────────────────────────────────
