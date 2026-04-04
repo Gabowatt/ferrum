@@ -8,9 +8,6 @@ pub enum FerrumError {
     #[error("alpaca API error: {0}")]
     Alpaca(String),
 
-    #[error("polygon API error: {0}")]
-    Polygon(String),
-
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 

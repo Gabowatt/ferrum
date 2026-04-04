@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub alpaca:   AlpacaConfig,
-    pub polygon:  PolygonConfig,
     pub risk:     RiskConfig,
     pub strategy: StrategyConfig,
 }
@@ -47,11 +46,6 @@ pub struct AlpacaLiveCredentials {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PolygonConfig {
-    pub key: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RiskConfig {
     pub max_position_usd:   f64,
     pub daily_drawdown_pct: f64,
@@ -67,11 +61,10 @@ pub struct StrategyConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeltaScanConfig {
-    pub delta_min:   f64,
-    pub delta_max:   f64,
-    pub iv_rank_min: f64,
-    pub dte_min:     u32,
-    pub dte_max:     u32,
+    pub delta_min: f64,
+    pub delta_max: f64,
+    pub dte_min:   u32,
+    pub dte_max:   u32,
 }
 
 impl AppConfig {

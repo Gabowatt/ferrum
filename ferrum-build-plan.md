@@ -13,6 +13,61 @@
 
 ---
 
+## System architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Phase 1                                                            │
+│                                                                     │
+│   ┌─────────────────┐      IPC (unix socket)     ┌──────────────┐  │
+│   │   ferrum-tui    │ ◄──────────────────────── ►│              │  │
+│   │  ratatui · TUI  │                            │              │  │
+│   └─────────────────┘                            │              │  │
+│                                                  │  ferrum-     │  │
+│   ┌─────────────────┐                            │  daemon      │  │
+│   │  config.toml    │ ──────────────────────────►│              │  │
+│   │  keys · params  │                            │  ┌─────────┐ │  │
+│   └─────────────────┘                            │  │Strategy │ │  │
+│                                                  │  │ engine  │ │  │
+│   ┌─────────────────┐                            │  ├─────────┤ │  │
+│   │   local DB      │ ◄─────────────────────── ► │  │  State  │ │  │
+│   │ SQLite · fills  │                            │  │ manager │ │  │
+│   └─────────────────┘                            │  ├─────────┤ │  │
+│                                                  │  │  Risk   │ │  │
+│                                                  │  │  guard  │ │  │
+│                                                  │  ├─────────┤ │  │
+│                                                  │  │   IPC   │ │  │
+│                                                  │  │ server  │ │  │
+│                                                  └──┴────┬────┘ │  │
+│                                                          │       │  │
+│                              ┌───────────────┬───────────┘       │  │
+│                              ▼               ▼                   │  │
+│                     ┌──────────────┐ ┌──────────────┐           │  │
+│                     │  Alpaca API  │ │ Polygon.io   │           │  │
+│                     │ paper ↔ live │ │ options data │           │  │
+│                     └──────────────┘ └──────────────┘           │  │
+│                                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│  Phase 2 (V2 — future)                                             │
+│                                                                     │
+│   ┌─────────────────┐    REST (hosted anywhere)  ┌──────────────┐  │
+│   │   Web app       │ ◄─────────────────────────►│  Axum HTTP   │  │
+│   │ remote config   │                            │  API layer   │  │
+│   └─────────────────┘                            └──────┬───────┘  │
+│                                                         │           │
+│                                                    connects to      │
+│                                                    daemon IPC       │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+- The daemon runs independently — TUI and (eventually) web app are just clients
+- Closing the TUI does **not** stop the bot
+- Paper/live switch happens inside the daemon; clients just send the toggle command
+- All external calls (Alpaca + Polygon) go through the daemon only — never from the TUI directly
+
+---
+
 ## Phase 0 — Setup (do this first, one session)
 
 ### 0.1 GitHub
