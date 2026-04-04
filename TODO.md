@@ -14,34 +14,24 @@
 - [x] Updated README with strategy summary
 - [x] Exceptional-win day trade rule added to strategy doc and implemented in PDT tracker
 
-## Next immediate steps
+## Completed this session (V1 paper trading readiness)
 
-### 1. TUI — PDT status panel
-Show PDT state directly in the TUI header or positions panel:
-- Day trades used / allowed in rolling window (e.g. "PDT: 1/2")
-- Color: green = budget available, yellow = 1 used, red = limit reached
-- Add `get_pdt` IPC command → daemon returns `{ used: n, max: n, resets_on: date }`
+- [x] TUI — PDT status in header (green/yellow/red, PDT: used/max)
+- [x] Exit monitoring loop — tiered exits: stop-loss, DTE≤7, profit target, time exit, dead money
+- [x] Order submission — `orders.rs` submits limit orders via Alpaca POST /v2/orders
+- [x] Open position tracking — `OpenPositionMeta` in `AppState.open_positions`
+- [x] IPC GetPositions + GetPdt commands
+- [x] TUI positions panel wired to live /v2/positions data
+- [x] Market hours gate — checks /v2/clock + scan_start/scan_end ET window
+- [x] PDT-aware exit blocking with force_exit_next_open flag
 
-### 2. Wire exit monitoring loop
-- Add `exit_monitor_task` in daemon — runs every `exit_check_interval` (60s)
-- Fetch open positions from Alpaca `/v2/positions`
-- For each open position: fetch current quote, compute unrealized P&L %
-- Evaluate all exit conditions (profit target, stop-loss, DTE, dead money)
-- PDT-aware exit: call `pdt.check_exit_allowed()` before submitting close order
-- Log all exit decisions to TUI and trade_log table
+## Remaining / nice-to-have
 
-### 3. Order submission
-- Implement actual limit order submission via Alpaca `POST /v2/orders`
-- Track order status (PENDING → FILLED / CANCELLED / EXPIRED)
-- On fill: write to fills + trade_log, update PDT tracker if day trade
-
-### 4. IPC — positions panel data
-- Add `get_positions` IPC command → fetch from Alpaca and return to TUI
-- TUI positions panel currently shows placeholder — wire to live data
-
-### 5. Market hours gate
-- Daemon should check Alpaca `/v2/clock` before each scan
-- Skip scan if market is closed or outside scan_start_time / scan_end_time window
+- [ ] Staged profit exits at +30% / +50% for multi-contract positions
+- [ ] EMA50 break exit condition (requires fresh bar fetch in exit monitor)
+- [ ] Order fill status polling (PENDING → FILLED / CANCELLED)
+- [ ] Sector concentration risk tracking
+- [ ] Export fills to CSV from TUI [E] keybinding
 
 ## To run locally
 
