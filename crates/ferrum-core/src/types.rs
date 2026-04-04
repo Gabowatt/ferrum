@@ -93,6 +93,7 @@ pub enum IpcCommand {
     GetFills,
     GetPositions,
     GetPdt,
+    GetMarketClock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +121,10 @@ pub enum IpcResponse {
     PdtStatus {
         used: u32,
         max:  u32,
+    },
+    MarketClock {
+        is_open:     bool,
+        next_change: String,   // e.g. "opens 09:30" or "closes 16:00"
     },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),

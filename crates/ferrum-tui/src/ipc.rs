@@ -75,6 +75,13 @@ impl IpcClient {
         }
     }
 
+    pub async fn request_market_clock(&mut self) -> Result<(bool, String), Box<dyn std::error::Error>> {
+        match self.send_cmd(IpcCommand::GetMarketClock).await? {
+            IpcResponse::MarketClock { is_open, next_change } => Ok((is_open, next_change)),
+            other => Err(format!("unexpected response: {other:?}").into()),
+        }
+    }
+
     /// Drain any buffered log events.
     pub fn poll_log_event(&mut self) -> Option<LogEvent> {
         self.log_buffer.pop_front()

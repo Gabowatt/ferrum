@@ -3,50 +3,47 @@ use ratatui::{
     text::{Line, Span},
 };
 
-// Pixel art for "FERRUM" — 5 rows, single-block pixels
-// Each letter is hand-designed on a 4-wide grid with 1-space gap
+// Palette: #1b2021 → #51513d → #a6a867 → #e3dc95 → #e3dcc2
+// Used as a top-lit gradient (cream = highlight, dark olive = shadow/base)
 //
-//  F     E     R     R     U     M
-//  ████  ████  ███   ███   █  █  █   █
-//  █     █     █  █  █  █  █  █  ██ ██
-//  ███   ███   ███   ███   █  █  █ █ █
-//  █     █     █ █   █ █   █  █  █   █
-//  █     ████  █  █  █  █  ████  █   █
+// Anvil icon — front silhouette with horn on left:
+//
+//   ▄████████    ← horn + flat top surface
+//  ██████████    ← full body (widest)
+//   ████████     ← slight taper
+//     █████      ← narrow waist
+//   ████████     ← stable base/feet
 
-const ROWS: &[&str] = &[
-    "████  ████  ███   ███   █  █  █   █",
-    "█     █     █  █  █  █  █  █  ██ ██",
-    "███   ███   ███   ███   █  █  █ █ █",
-    "█     █     █ █   █ █   █  █  █   █",
-    "█     ████  █  █  █  █  ████  █   █",
+const ICON: &[&str] = &[
+    "  ▄████████",
+    " ███████████",
+    "  █████████ ",
+    "    █████   ",
+    "  █████████ ",
 ];
 
-// Gradient: top rows are bright amber, bottom rows shift toward orange-red
-// giving a "glowing hot iron" effect
-const ROW_COLORS: &[Color] = &[
-    Color::Rgb(255, 200,  60),  // bright gold
-    Color::Rgb(255, 165,  30),  // amber
-    Color::Rgb(255, 130,  20),  // orange
-    Color::Rgb(220,  90,  10),  // deep orange
-    Color::Rgb(180,  50,   5),  // red-orange (cooling iron)
+const ICON_COLORS: &[Color] = &[
+    Color::Rgb(227, 220, 194),  // #e3dcc2  cream   — top highlight
+    Color::Rgb(227, 220, 149),  // #e3dc95  warm    — upper face
+    Color::Rgb(166, 168, 103),  // #a6a867  olive   — mid body
+    Color::Rgb( 81,  81,  61),  // #51513d  d-olive — waist shadow
+    Color::Rgb( 81,  81,  61),  // #51513d  d-olive — base
 ];
 
-/// Returns the 5 logo lines with gradient coloring, padded to `width`.
+/// Returns the 5 icon lines with top-lit gradient coloring.
 pub fn logo_lines() -> Vec<Line<'static>> {
-    ROWS.iter().zip(ROW_COLORS.iter()).map(|(&row, &color)| {
+    ICON.iter().zip(ICON_COLORS.iter()).map(|(&row, &color)| {
         Line::from(Span::styled(
-            format!("  {row}"),
+            row,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ))
     }).collect()
 }
 
-/// One-line tagline shown beneath the logo.
+/// One-line tagline shown beneath the icon.
 pub fn tagline() -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            "  ⚒  quant options trader",
-            Style::default().fg(Color::Rgb(120, 120, 120)),
-        ),
-    ])
+    Line::from(Span::styled(
+        "  ferrum — quant options trader",
+        Style::default().fg(Color::Rgb(81, 81, 61)),
+    ))
 }

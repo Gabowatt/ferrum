@@ -18,6 +18,9 @@ pub struct App {
     pub pdt_max:    u32,
     pub log_events: VecDeque<LogEvent>,
 
+    pub market_open:        Option<bool>,
+    pub market_next_change: String,
+
     pub log_scroll:  usize,
     pub tail_follow: bool,
     pub show_help:   bool,
@@ -36,6 +39,8 @@ impl App {
             positions:     Vec::new(),
             pdt_used:      0,
             pdt_max:       3,
+            market_open:        None,
+            market_next_change: String::new(),
             log_events:    VecDeque::new(),
             log_scroll:    0,
             tail_follow:   true,

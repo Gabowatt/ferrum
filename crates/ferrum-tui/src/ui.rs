@@ -11,15 +11,41 @@ use ferrum_core::types::{BotStatus, LogEvent, LogLevel};
 use crate::app::App;
 use crate::logo;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Palette ───────────────────────────────────────────────────────────────────
+const OLIVE:  Color = Color::Rgb( 81,  81,  61);  // #51513d  dark olive
+const MID:    Color = Color::Rgb(166, 168, 103);  // #a6a867  olive
+const WARM:   Color = Color::Rgb(227, 220, 149);  // #e3dc95  warm yellow
+const CREAM:  Color = Color::Rgb(227, 220, 194);  // #e3dcc2  cream
+
+// Keep traffic-light semantics for P&L / buy-sell — palette can't replace those.
+const UP:    Color = Color::Rgb(130, 190, 100);   // muted green  (profit)
+const DOWN:  Color = Color::Rgb(200,  80,  80);   // muted red    (loss)
+
+// ── Style helpers ─────────────────────────────────────────────────────────────
+
+fn dim()    -> Style { Style::default().fg(OLIVE) }
+fn normal() -> Style { Style::default().fg(MID)   }
+fn bright() -> Style { Style::default().fg(WARM)  }
+fn head()   -> Style { Style::default().fg(CREAM).add_modifier(Modifier::BOLD) }
+
+fn bordered(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(dim())
+        .title(Span::styled(format!(" {title} "), bright()))
+}
+
+fn pnl_color(v: f64) -> Color { if v >= 0.0 { UP } else { DOWN } }
 
 fn pdt_color(used: u32, max: u32) -> Color {
-    if max == 0 { return Color::DarkGray; }
-    let ratio = used as f32 / max as f32;
-    if ratio >= 1.0      { Color::Red    }
-    else if ratio >= 0.67 { Color::Yellow }
-    else                  { Color::Green  }
+    if max == 0 { return OLIVE; }
+    let r = used as f32 / max as f32;
+    if r >= 1.0       { DOWN }
+    else if r >= 0.67 { WARM }
+    else              { UP   }
 }
+
+// ── Top-level draw ────────────────────────────────────────────────────────────
 
 pub fn draw(f: &mut Frame, app: &App) {
     if !app.daemon_online {
@@ -28,17 +54,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     let area = f.area();
-
-    // ── Top-level layout ──────────────────────────────────────────────────────
-    // [header][positions+pnl][fills][log][keybindings]
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // header (logo 5 + tagline + status)
+            Constraint::Length(7),  // header: icon(5) + tagline + status
             Constraint::Length(6),  // positions + pnl
             Constraint::Length(5),  // recent fills
             Constraint::Min(6),     // bot log
-            Constraint::Length(1),  // keybindings bar
+            Constraint::Length(1),  // keybindings
         ])
         .split(area);
 
@@ -53,62 +76,93 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
+// ── Offline splash ────────────────────────────────────────────────────────────
+
 fn draw_offline(f: &mut Frame) {
     let area = f.area();
     let msg = vec![
-        Line::from(Span::styled("ferrum daemon is offline", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "ferrum daemon is offline",
+            Style::default().fg(DOWN).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from("Start the daemon with:  cargo run -p ferrum-daemon"),
+        Line::from(Span::styled(
+            "  cargo run -p ferrum-daemon",
+            normal(),
+        )),
         Line::from(""),
-        Line::from(Span::styled("[Q] Quit", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("[Q] Quit", dim())),
     ];
-    let p = Paragraph::new(msg)
-        .block(Block::default().borders(Borders::ALL).title(" ferrum "))
-        .wrap(Wrap { trim: false });
-    f.render_widget(p, area);
+    f.render_widget(
+        Paragraph::new(msg)
+            .block(Block::default().borders(Borders::ALL).border_style(dim()).title(
+                Span::styled(" ferrum ", head()),
+            ))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
+// ── Header ────────────────────────────────────────────────────────────────────
+
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    // Stack: 5 logo rows + tagline + status line
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // pixel art
+            Constraint::Length(5),  // anvil icon
             Constraint::Length(1),  // tagline
-            Constraint::Length(1),  // status / pdt / clock
+            Constraint::Length(1),  // status line
         ])
         .split(area);
 
-    // Logo
     f.render_widget(Paragraph::new(logo::logo_lines()), rows[0]);
-
-    // Tagline
     f.render_widget(Paragraph::new(logo::tagline()), rows[1]);
 
-    // Status line
-    let status_color = match app.bot_status {
-        BotStatus::Running  => Color::Green,
-        BotStatus::Idle     => Color::Yellow,
-        BotStatus::Stopping => Color::Red,
+    // ── Status line ───────────────────────────────────────────────────────────
+    let bot_color = match app.bot_status {
+        BotStatus::Running  => UP,
+        BotStatus::Idle     => OLIVE,
+        BotStatus::Stopping => DOWN,
     };
+
+    let (market_dot, market_label, market_color) = match app.market_open {
+        Some(true)  => ("●", "OPEN",    UP),
+        Some(false) => ("●", "CLOSED",  OLIVE),
+        None        => ("○", "?",       OLIVE),
+    };
+
+    let next = if app.market_next_change.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", app.market_next_change)
+    };
+
     let time = Local::now().format("%H:%M:%S").to_string();
     let pdt_col = pdt_color(app.pdt_used, app.pdt_max);
+
     let status_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("[{}]", app.mode), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("[{}]", app.mode), Style::default().fg(MID)),
         Span::raw("  "),
-        Span::styled("●", Style::default().fg(status_color)),
-        Span::raw(format!(" {}  ", app.bot_status)),
-        Span::raw("PDT: "),
+        Span::styled("●", Style::default().fg(bot_color)),
+        Span::styled(format!(" {}  ", app.bot_status), Style::default().fg(bot_color)),
+        Span::styled("PDT ", dim()),
         Span::styled(
             format!("{}/{}", app.pdt_used, app.pdt_max),
             Style::default().fg(pdt_col),
         ),
         Span::raw("  "),
-        Span::styled(time, Style::default().fg(Color::DarkGray)),
+        Span::styled(market_dot, Style::default().fg(market_color)),
+        Span::raw(" "),
+        Span::styled(market_label, Style::default().fg(market_color)),
+        Span::styled(next, dim()),
+        Span::raw("  "),
+        Span::styled(time, dim()),
     ]);
     f.render_widget(Paragraph::new(status_line), rows[2]);
 }
+
+// ── Positions + PnL ───────────────────────────────────────────────────────────
 
 fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
     let cols = Layout::default()
@@ -116,22 +170,19 @@ fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // ── Positions panel ───────────────────────────────────────────────────────
-    let pos_block = Block::default().borders(Borders::ALL).title(format!(
-        " Positions ({}) ", app.positions.len()
-    ));
+    let pos_block = bordered("Positions").title_bottom(
+        Span::styled(format!(" {} open ", app.positions.len()), dim()),
+    );
 
     if app.positions.is_empty() {
-        let pos_text = Paragraph::new("  (no open positions)")
-            .block(pos_block)
-            .style(Style::default().fg(Color::DarkGray));
-        f.render_widget(pos_text, cols[0]);
+        f.render_widget(
+            Paragraph::new(Span::styled("  no open positions", dim())).block(pos_block),
+            cols[0],
+        );
     } else {
         let items: Vec<ListItem> = app.positions.iter().take(4).map(|pos| {
-            let pnl_pct  = pos.unrealized_plpc * 100.0;
-            let pnl_color = if pnl_pct >= 0.0 { Color::Green } else { Color::Red };
-            let dir_color = if pos.direction == "call" { Color::Cyan } else { Color::Magenta };
-            // Shorten contract: last 15 chars
+            let pnl_pct   = pos.unrealized_plpc * 100.0;
+            let dir_color = if pos.direction == "call" { MID } else { WARM };
             let contract_short = if pos.contract.len() > 18 {
                 &pos.contract[pos.contract.len() - 18..]
             } else {
@@ -139,58 +190,69 @@ fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
             };
             ListItem::new(Line::from(vec![
                 Span::raw("  "),
+                Span::styled(format!("{:<18}", contract_short), Style::default().fg(dir_color)),
                 Span::styled(
-                    format!("{:<18}", contract_short),
-                    Style::default().fg(dir_color),
+                    format!(" x{:.0}  @{:.2}  ", pos.qty, pos.entry_price),
+                    normal(),
                 ),
-                Span::raw(format!(" x{:.0}  @{:.2}  ", pos.qty, pos.entry_price)),
                 Span::styled(
                     format!("{:+.1}%", pnl_pct),
-                    Style::default().fg(pnl_color),
+                    Style::default().fg(pnl_color(pnl_pct)),
                 ),
                 Span::styled(
                     format!(" ({:+.0})", pos.unrealized_pl),
-                    Style::default().fg(pnl_color),
+                    Style::default().fg(pnl_color(pnl_pct)),
                 ),
             ]))
         }).collect();
         f.render_widget(List::new(items).block(pos_block), cols[0]);
     }
 
-    // ── PnL panel ─────────────────────────────────────────────────────────────
-    let pnl_color = |v: f64| if v >= 0.0 { Color::Green } else { Color::Red };
     let pnl_lines = vec![
         Line::from(vec![
-            Span::raw("  Today   "),
-            Span::styled(format!("{:+.2}", app.pnl_today), Style::default().fg(pnl_color(app.pnl_today))),
+            Span::styled("  Today  ", dim()),
+            Span::styled(
+                format!("{:+.2}", app.pnl_today),
+                Style::default().fg(pnl_color(app.pnl_today)),
+            ),
         ]),
         Line::from(vec![
-            Span::raw("  Month   "),
-            Span::styled(format!("{:+.2}", app.pnl_month), Style::default().fg(pnl_color(app.pnl_month))),
+            Span::styled("  Month  ", dim()),
+            Span::styled(
+                format!("{:+.2}", app.pnl_month),
+                Style::default().fg(pnl_color(app.pnl_month)),
+            ),
         ]),
         Line::from(vec![
-            Span::raw("  Year    "),
-            Span::styled(format!("{:+.2}", app.pnl_year), Style::default().fg(pnl_color(app.pnl_year))),
+            Span::styled("  Year   ", dim()),
+            Span::styled(
+                format!("{:+.2}", app.pnl_year),
+                Style::default().fg(pnl_color(app.pnl_year)),
+            ),
         ]),
     ];
-    let pnl_block = Block::default().borders(Borders::ALL).title(" PnL ");
-    f.render_widget(Paragraph::new(pnl_lines).block(pnl_block), cols[1]);
+    f.render_widget(Paragraph::new(pnl_lines).block(bordered("PnL")), cols[1]);
 }
+
+// ── Recent fills ──────────────────────────────────────────────────────────────
 
 fn draw_fills(f: &mut Frame, area: Rect, app: &App) {
     let items: Vec<ListItem> = app.fills.iter().take(4).map(|fill| {
-        let time = fill.timestamp.with_timezone(&Local).format("%H:%M").to_string();
-        let side_color = if fill.side.to_lowercase() == "buy" { Color::Green } else { Color::Red };
+        let time       = fill.timestamp.with_timezone(&Local).format("%H:%M").to_string();
+        let side_color = if fill.side.to_lowercase() == "buy" { UP } else { DOWN };
         ListItem::new(Line::from(vec![
-            Span::styled(format!("  {time}  "), Style::default().fg(Color::DarkGray)),
-            Span::styled(fill.side.to_uppercase(), Style::default().fg(side_color)),
-            Span::raw(format!("  {}  x{:.0}  @ ${:.2}", fill.symbol, fill.qty, fill.price)),
+            Span::styled(format!("  {time}  "), dim()),
+            Span::styled(fill.side.to_uppercase(), Style::default().fg(side_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {}  x{:.0}  @ ${:.2}", fill.symbol, fill.qty, fill.price),
+                normal(),
+            ),
         ]))
     }).collect();
-
-    let block = Block::default().borders(Borders::ALL).title(" Recent Fills ");
-    f.render_widget(List::new(items).block(block), area);
+    f.render_widget(List::new(items).block(bordered("Recent Fills")), area);
 }
+
+// ── Bot log ───────────────────────────────────────────────────────────────────
 
 fn draw_log(f: &mut Frame, area: Rect, app: &App) {
     let events: Vec<&LogEvent> = app.log_events.iter().collect();
@@ -206,64 +268,69 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
         .map(|ev| {
             let time = ev.timestamp.with_timezone(&Local).format("%H:%M:%S").to_string();
             let (level_str, level_color) = match ev.level {
-                LogLevel::Info   => ("INFO  ", Color::White),
-                LogLevel::Signal => ("SIGNAL", Color::Yellow),
-                LogLevel::Order  => ("ORDER ", Color::Cyan),
-                LogLevel::Risk   => ("RISK  ", Color::LightRed),
-                LogLevel::Error  => ("ERROR ", Color::Red),
-                LogLevel::Warn   => ("WARN  ", Color::Magenta),
+                LogLevel::Info   => ("INFO  ", MID),
+                LogLevel::Signal => ("SIGNAL", WARM),
+                LogLevel::Order  => ("ORDER ", CREAM),
+                LogLevel::Risk   => ("RISK  ", DOWN),
+                LogLevel::Error  => ("ERROR ", DOWN),
+                LogLevel::Warn   => ("WARN  ", WARM),
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("  {time}  "), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {time}  "), dim()),
                 Span::styled(format!("[{level_str}]  "), Style::default().fg(level_color)),
-                Span::raw(&ev.message),
+                Span::styled(&ev.message, normal()),
             ]))
         })
         .collect();
 
     let title = if app.tail_follow {
-        " Bot Log (following) "
+        "Bot Log ↓"
     } else {
-        " Bot Log (↑↓ scroll — [F]/[End] to follow) "
+        "Bot Log  ↑↓ scroll · [F]/[End] follow"
     };
 
-    let block = Block::default().borders(Borders::ALL).title(title);
-    f.render_widget(List::new(items).block(block), area);
+    f.render_widget(List::new(items).block(bordered(title)), area);
 }
+
+// ── Keybindings bar ───────────────────────────────────────────────────────────
 
 fn draw_keybindings(f: &mut Frame, area: Rect) {
     let line = Line::from(vec![
-        Span::styled(" [S]", Style::default().fg(Color::Green)),   Span::raw(" Start  "),
-        Span::styled("[X]", Style::default().fg(Color::Red)),      Span::raw(" Stop  "),
-        Span::styled("[M]", Style::default().fg(Color::Cyan)),     Span::raw(" Mode  "),
-        Span::styled("[E]", Style::default().fg(Color::Yellow)),   Span::raw(" Export  "),
-        Span::styled("[Q]", Style::default().fg(Color::DarkGray)), Span::raw(" Quit  "),
-        Span::styled("[?]", Style::default().fg(Color::DarkGray)), Span::raw(" Help "),
+        Span::raw(" "),
+        Span::styled("[S]", Style::default().fg(UP)),   Span::styled(" Start  ", dim()),
+        Span::styled("[X]", Style::default().fg(DOWN)),  Span::styled(" Stop  ", dim()),
+        Span::styled("[M]", Style::default().fg(MID)),   Span::styled(" Mode  ", dim()),
+        Span::styled("[E]", Style::default().fg(WARM)),  Span::styled(" Export  ", dim()),
+        Span::styled("[Q]", dim()),                      Span::styled(" Quit  ", dim()),
+        Span::styled("[?]", dim()),                      Span::styled(" Help", dim()),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
+
+// ── Help overlay ──────────────────────────────────────────────────────────────
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let popup = centered_rect(60, 70, area);
     f.render_widget(Clear, popup);
 
     let text = vec![
-        Line::from(Span::styled("Keybindings", Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled("Keybindings", head())),
         Line::from(""),
-        Line::from("  [S]          Start strategy loop"),
-        Line::from("  [X]          Stop strategy loop"),
-        Line::from("  [M]          Toggle mode (paper/live)"),
-        Line::from("  [E]          Export fills to CSV"),
-        Line::from("  [Q]          Quit TUI (daemon keeps running)"),
-        Line::from("  [↑] [↓]      Scroll bot log"),
-        Line::from("  [End] [F]    Return to tail-follow mode"),
-        Line::from("  [?]          Toggle this help overlay"),
+        Line::from(Span::styled("  [S]          Start strategy loop",   normal())),
+        Line::from(Span::styled("  [X]          Stop strategy loop",    normal())),
+        Line::from(Span::styled("  [M]          Toggle mode",           normal())),
+        Line::from(Span::styled("  [E]          Export fills to CSV",   normal())),
+        Line::from(Span::styled("  [Q]          Quit TUI (daemon keeps running)", normal())),
+        Line::from(Span::styled("  [↑] [↓]      Scroll bot log",        normal())),
+        Line::from(Span::styled("  [End] [F]    Return to tail-follow", normal())),
+        Line::from(Span::styled("  [?]          Toggle this overlay",   normal())),
         Line::from(""),
-        Line::from(Span::styled("  Press [?] to close", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("  Press [?] to close", dim())),
     ];
     f.render_widget(
         Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(" Help "))
+            .block(Block::default().borders(Borders::ALL).border_style(dim())
+                .title(Span::styled(" Help ", bright())))
             .wrap(Wrap { trim: false }),
         popup,
     );

@@ -143,6 +143,13 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 max:  pdt.max_per_window,
             }
         }
+
+        IpcCommand::GetMarketClock => {
+            match fetch_market_clock(&state.client).await {
+                Ok(resp) => resp,
+                Err(e)   => IpcResponse::Error { message: e.to_string() },
+            }
+        }
     }
 }
 
@@ -215,6 +222,41 @@ async fn fetch_pnl(
         month: 0.0, // TODO: derive from history array
         year:  0.0,
     })
+}
+
+// ── Market clock helper ────────────────────────────────────────────────────────
+
+async fn fetch_market_clock(
+    client: &ferrum_core::client::AlpacaClient,
+) -> Result<IpcResponse, ferrum_core::error::FerrumError> {
+    #[derive(serde::Deserialize)]
+    struct Clock {
+        is_open:    bool,
+        next_open:  String,
+        next_close: String,
+    }
+
+    let clock: Clock = client.get("/v2/clock").await?;
+
+    let next_change = if clock.is_open {
+        // Show local time of next close
+        parse_clock_time(&clock.next_close)
+            .map(|t| format!("closes {t}"))
+            .unwrap_or_else(|| "closes --:--".to_string())
+    } else {
+        parse_clock_time(&clock.next_open)
+            .map(|t| format!("opens {t}"))
+            .unwrap_or_else(|| "opens --:--".to_string())
+    };
+
+    Ok(IpcResponse::MarketClock { is_open: clock.is_open, next_change })
+}
+
+/// Parse an RFC3339 timestamp and return "HH:MM" in local time.
+fn parse_clock_time(ts: &str) -> Option<String> {
+    use chrono::{DateTime, Local};
+    let dt = DateTime::parse_from_rfc3339(ts).ok()?;
+    Some(dt.with_timezone(&Local).format("%H:%M").to_string())
 }
 
 fn json_line(resp: &IpcResponse) -> String {

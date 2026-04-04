@@ -75,6 +75,10 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     app.pdt_used = used;
                     app.pdt_max  = max;
                 }
+                if let Ok((is_open, next_change)) = client.request_market_clock().await {
+                    app.market_open        = Some(is_open);
+                    app.market_next_change = next_change;
+                }
             }
         } else {
             // Retry connection.
