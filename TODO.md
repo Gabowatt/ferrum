@@ -36,11 +36,12 @@
 
 ## Next immediate step — resume here next session
 
-### 1. Staged profit exits (multi-contract)
-Currently closes full position at +40%. Add staged logic:
-- qty > 1: close 50% at +30%, close remainder at +50%
-- qty == 1: close at +40% (already done)
-- Only affects calls/puts independently — safe to add without changing single-contract behavior
+### 1. Dynamic / staged profit exits
+Replace the fixed +40% profit target with a smarter exit system:
+- **Trailing profit target**: once P&L exceeds a threshold (e.g. +30%), the exit level trails the peak P&L by a fixed offset (e.g. 15%), locking in gains as the contract appreciates
+- **Staged closes (qty > 1)**: close 50% at first target, let remainder trail independently
+- qty == 1: trailing target only (no split needed)
+- Design TBD — revisit after paper trading gives real P&L distribution data
 
 ### 2. Sector concentration tracking
 `RiskGuard::check_entry` has a `max_sector_positions` config but sector lookup is not wired.
