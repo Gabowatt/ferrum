@@ -1,5 +1,7 @@
 mod db;
 mod ipc;
+mod iv_rank;
+mod pdt;
 mod risk;
 mod strategy;
 
@@ -14,14 +16,14 @@ use ferrum_core::{
     types::{BotStatus, LogEvent},
 };
 
-/// Shared application state passed to IPC handlers and strategy tasks.
 #[derive(Debug)]
 pub struct AppState {
-    pub config: AppConfig,
-    pub client: AlpacaClient,
-    pub status: Mutex<BotStatus>,
-    pub log_tx: broadcast::Sender<LogEvent>,
-    pub db:     db::Database,
+    pub config:  AppConfig,
+    pub client:  AlpacaClient,
+    pub status:  Mutex<BotStatus>,
+    pub log_tx:  broadcast::Sender<LogEvent>,
+    pub db:      db::Database,
+    pub pdt:     Mutex<pdt::PdtTracker>,
 }
 
 #[tokio::main]
@@ -33,44 +35,45 @@ async fn main() -> Result<(), FerrumError> {
         )
         .init();
 
-    // ── Load config ──────────────────────────────────────────────────────────
     let cfg_path = std::env::var("FERRUM_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
     let config = AppConfig::load(&cfg_path)?;
     info!("Loaded config from {cfg_path}");
 
-    // ── Live trading gate ────────────────────────────────────────────────────
+    // Live trading gate
     if config.alpaca.mode == Mode::Live {
         if !config.alpaca.live.enabled {
-            error!("Live trading is disabled in V1. Set alpaca.live.enabled=true to unlock (not recommended).");
+            error!("Live trading is disabled in V1.");
             return Err(FerrumError::LiveTradingDisabled);
         }
         error!("Live trading attempted — refusing in V1.");
         return Err(FerrumError::LiveTradingDisabled);
     }
-
     info!("Mode: {}", config.alpaca.mode);
 
-    // ── Alpaca client ────────────────────────────────────────────────────────
     let client = AlpacaClient::new(&config)?;
 
-    // ── Health check ─────────────────────────────────────────────────────────
+    // Health check
     info!("Performing Alpaca health check...");
     let account: serde_json::Value = client.get("/v2/account").await
-        .map_err(|e| {
-            error!("Alpaca health check failed: {e}");
-            e
-        })?;
-    info!(
-        "Connected to Alpaca — account status: {}",
-        account["status"].as_str().unwrap_or("unknown")
-    );
+        .map_err(|e| { error!("Alpaca health check failed: {e}"); e })?;
+    info!("Connected — account status: {}", account["status"].as_str().unwrap_or("unknown"));
 
-    // ── SQLite ───────────────────────────────────────────────────────────────
+    // SQLite
     let db = db::Database::open().await?;
     db.migrate().await?;
     info!("Database ready");
 
-    // ── Broadcast channel for log events (TUI subscribes via IPC) ───────────
+    // PDT tracker — load history from DB
+    let mut pdt_tracker = pdt::PdtTracker::new(
+        config.pdt.max_day_trades_per_5d,
+        config.pdt.rolling_window_days,
+        config.pdt.emergency_stop_pct,
+    );
+    pdt_tracker.load_from_db(&db).await?;
+    let dt_count = pdt_tracker.count_in_window();
+    info!("PDT tracker loaded — {dt_count}/{} day trades in current window",
+        config.pdt.max_day_trades_per_5d);
+
     let (log_tx, _) = broadcast::channel::<LogEvent>(512);
 
     let state = Arc::new(AppState {
@@ -79,12 +82,14 @@ async fn main() -> Result<(), FerrumError> {
         status: Mutex::new(BotStatus::Idle),
         log_tx: log_tx.clone(),
         db,
+        pdt: Mutex::new(pdt_tracker),
     });
 
-    // ── Emit startup log event ───────────────────────────────────────────────
     let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
 
-    // ── IPC server ───────────────────────────────────────────────────────────
+    // Fill sync background task
+    tokio::spawn(strategy::fill_sync_task(state.clone()));
+
     info!("Starting IPC server on /tmp/ferrum.sock");
     ipc::run_server(state.clone()).await?;
 
