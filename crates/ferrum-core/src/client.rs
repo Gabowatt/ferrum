@@ -81,6 +81,26 @@ impl AlpacaClient {
         Ok(resp.json::<T>().await?)
     }
 
+    /// DELETE `{base_url}{path}` — returns Null on 204, otherwise deserializes JSON.
+    pub async fn delete(&self, path: &str) -> Result<serde_json::Value, FerrumError> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self.http
+            .delete(&url)
+            .header("APCA-API-KEY-ID", &self.key)
+            .header("APCA-API-SECRET-KEY", &self.secret)
+            .send()
+            .await?;
+        if resp.status() == 204 {
+            return Ok(serde_json::Value::Null);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(FerrumError::Alpaca(format!("{status}: {body}")));
+        }
+        Ok(resp.json::<serde_json::Value>().await?)
+    }
+
     /// POST with a JSON body.
     pub async fn post<B, T>(&self, path: &str, body: &B) -> Result<T, FerrumError>
     where
