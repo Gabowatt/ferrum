@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 use serde::Deserialize;
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 
 use ferrum_core::{
     client::AlpacaClient,
@@ -13,8 +13,9 @@ use ferrum_core::{
 };
 use crate::{
     iv_rank::IvRankEngine,
+    orders,
     risk::RiskGuard,
-    AppState,
+    AppState, OpenPositionMeta,
 };
 
 // ── Strategy trait ────────────────────────────────────────────────────────────
@@ -23,6 +24,65 @@ use crate::{
 pub trait Strategy: Send + Sync {
     fn name(&self) -> &str;
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError>;
+}
+
+// ── Alpaca clock ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AlpacaClock {
+    is_open:    bool,
+    next_open:  Option<String>,
+    next_close: Option<String>,
+}
+
+/// Returns true if the market is open AND the current ET time is within the
+/// configured scan window.
+async fn market_is_open(state: &AppState) -> bool {
+    let clock: AlpacaClock = match state.client.get("/v2/clock").await {
+        Ok(c)  => c,
+        Err(e) => {
+            let _ = state.log_tx.send(LogEvent::warn(format!("clock fetch failed: {e}")));
+            return false;
+        }
+    };
+
+    if !clock.is_open {
+        let _ = state.log_tx.send(LogEvent::info(format!(
+            "market closed — skipping scan (next open: {})",
+            clock.next_open.as_deref().unwrap_or("unknown")
+        )));
+        return false;
+    }
+
+    // Check configured ET scan window using UTC time offset (-5 or -4 for EDT)
+    // We parse HH:MM from scan_start_time / scan_end_time and compare against
+    // current UTC time shifted by -5 (ET, approximate).
+    let et_offset_hours: i64 = -5; // EST; -4 for EDT (conservative)
+    let now_utc = Utc::now();
+    let et_hour = (now_utc.hour() as i64 + et_offset_hours).rem_euclid(24) as u32;
+    let et_min  = now_utc.minute();
+    let et_mins = et_hour * 60 + et_min;
+
+    fn parse_hhmm(s: &str) -> Option<u32> {
+        let mut parts = s.splitn(2, ':');
+        let h: u32 = parts.next()?.parse().ok()?;
+        let m: u32 = parts.next()?.parse().ok()?;
+        Some(h * 60 + m)
+    }
+
+    let start_mins = parse_hhmm(&state.config.strategy.scan_start_time).unwrap_or(570);  // 09:30
+    let end_mins   = parse_hhmm(&state.config.strategy.scan_end_time).unwrap_or(930);    // 15:30
+
+    if et_mins < start_mins || et_mins >= end_mins {
+        let _ = state.log_tx.send(LogEvent::info(format!(
+            "outside scan window ({} – {}) ET — skipping",
+            state.config.strategy.scan_start_time,
+            state.config.strategy.scan_end_time,
+        )));
+        return false;
+    }
+
+    true
 }
 
 // ── Main strategy loop ────────────────────────────────────────────────────────
@@ -36,10 +96,17 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
         {
             let status = state.status.lock().await;
             if *status == BotStatus::Stopping {
+                drop(status);
                 *state.status.lock().await = BotStatus::Idle;
                 let _ = state.log_tx.send(LogEvent::info("strategy loop stopped"));
                 return;
             }
+        }
+
+        // Market hours gate
+        if !market_is_open(&state).await {
+            sleep(entry_interval).await;
+            continue;
         }
 
         let _ = state.log_tx.send(LogEvent::info("[iron-conduit] scan cycle starting"));
@@ -50,12 +117,21 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             }
             Ok(signals) => {
                 for signal in signals {
-                    let guard = RiskGuard::new(&state.config, 0, 0.0, 1000.0, 0.0);
+                    // Build real risk guard with live position count
+                    let pos_count = state.open_positions.lock().await.len() as u32;
+                    let guard = RiskGuard::new(&state.config, pos_count, 0.0, 1000.0, 0.0);
                     match guard.check_entry(&signal) {
                         Ok(()) => {
                             let _ = state.log_tx.send(LogEvent::risk("risk guard passed"));
-                            let _ = state.log_tx.send(LogEvent::signal(format!("{signal:?}")));
-                            // V1: log only — order submission wired in next milestone
+
+                            // Check we're Running before submitting
+                            let running = *state.status.lock().await == BotStatus::Running;
+                            if !running {
+                                let _ = state.log_tx.send(LogEvent::info("not running — skipping order"));
+                                continue;
+                            }
+
+                            submit_signal_orders(&state, &signal).await;
                         }
                         Err(e) => {
                             let _ = state.log_tx.send(LogEvent::risk(format!("blocked: {e}")));
@@ -70,6 +146,74 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
         }
 
         sleep(entry_interval).await;
+    }
+}
+
+/// Submit orders for all legs in a signal and track the position.
+async fn submit_signal_orders(state: &AppState, signal: &Signal) {
+    let (underlying, legs) = match signal {
+        Signal::EnterLong  { symbol, legs } => (symbol.as_str(), legs),
+        Signal::EnterShort { symbol, legs } => (symbol.as_str(), legs),
+        Signal::Exit { symbol } => {
+            let _ = state.log_tx.send(LogEvent::info(format!("exit signal for {symbol} — handled by exit monitor")));
+            return;
+        }
+    };
+
+    for leg in legs {
+        let side = match leg.action {
+            LegAction::Buy  => "buy",
+            LegAction::Sell => "sell",
+        };
+        let limit_price = match leg.limit_price {
+            Some(p) => p,
+            None => {
+                let _ = state.log_tx.send(LogEvent::warn(format!(
+                    "leg {} has no limit price — skipping", leg.contract
+                )));
+                continue;
+            }
+        };
+
+        match orders::submit_limit_order(&state.client, &leg.contract, side, leg.qty, limit_price).await {
+            Ok(order) => {
+                let _ = state.log_tx.send(LogEvent::order(format!(
+                    "submitted {} {} {} @ ${:.2} → order id {}",
+                    side, leg.qty, leg.contract, limit_price, order.id
+                )));
+
+                // Log to DB
+                let direction = if leg.contract.contains('C') { "call" } else { "put" };
+                let _ = state.db.insert_trade_log(
+                    &leg.contract, underlying, direction, "buy",
+                    limit_price, leg.qty as i64,
+                    None, None, None, None, None, None, None,
+                ).await;
+
+                // Track position
+                let meta = OpenPositionMeta {
+                    contract:             leg.contract.clone(),
+                    underlying:           underlying.to_string(),
+                    direction:            direction.to_string(),
+                    opened_at:            Utc::now(),
+                    entry_price:          limit_price,
+                    qty:                  leg.qty,
+                    confluence_score:     0,
+                    regime:               String::new(),
+                    iv_rank:              0.0,
+                    delta:                0.0,
+                    dte_at_entry:         0,
+                    pending_order_id:     Some(order.id),
+                    force_exit_next_open: false,
+                };
+                state.open_positions.lock().await.insert(leg.contract.clone(), meta);
+            }
+            Err(e) => {
+                let _ = state.log_tx.send(LogEvent::error(format!(
+                    "order submit failed for {}: {e}", leg.contract
+                )));
+            }
+        }
     }
 }
 
