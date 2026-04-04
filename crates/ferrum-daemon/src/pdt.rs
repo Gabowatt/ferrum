@@ -10,6 +10,7 @@ pub struct PdtTracker {
     pub max_per_window:      u32,
     pub rolling_window_days: u32,
     pub emergency_stop_pct:  f64,
+    pub exceptional_win_pct: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -25,12 +26,18 @@ pub struct DayTradeRecord {
 }
 
 impl PdtTracker {
-    pub fn new(max_per_window: u32, rolling_window_days: u32, emergency_stop_pct: f64) -> Self {
+    pub fn new(
+        max_per_window: u32,
+        rolling_window_days: u32,
+        emergency_stop_pct: f64,
+        exceptional_win_pct: f64,
+    ) -> Self {
         Self {
             day_trades: Vec::new(),
             max_per_window,
             rolling_window_days,
             emergency_stop_pct,
+            exceptional_win_pct,
         }
     }
 
@@ -59,29 +66,36 @@ impl PdtTracker {
     }
 
     /// Check if an exit is allowed given PDT constraints.
+    /// `pnl_pct` is positive for gains, negative for losses (as % of premium paid).
     /// Returns Ok(()) or Err with explanation.
     pub fn check_exit_allowed(
         &self,
         opened_at: DateTime<Utc>,
-        current_loss_pct: f64,
+        pnl_pct: f64,
     ) -> Result<(), String> {
         if !self.would_be_day_trade(opened_at) {
-            return Ok(()); // overnight hold — not a day trade
+            return Ok(()); // overnight hold — not a day trade, always allowed
         }
 
         if self.can_day_trade() {
             return Ok(()); // still have day trade budget
         }
 
-        // PDT limit reached — only allow emergency exit
-        if current_loss_pct >= self.emergency_stop_pct {
-            return Ok(()); // emergency exit allowed
+        // PDT limit reached — check exceptions
+        let loss_pct = -pnl_pct; // positive = loss
+        if loss_pct >= self.emergency_stop_pct {
+            return Ok(()); // emergency stop-loss
+        }
+
+        if pnl_pct >= self.exceptional_win_pct {
+            return Ok(()); // exceptional gain — take the money
         }
 
         Err(format!(
-            "PDT limit ({}/{}) reached — holding overnight (loss {:.1}% < emergency threshold {:.1}%)",
+            "PDT limit ({}/{}) reached — holding overnight \
+             (pnl {:.1}% not emergency loss ≥{:.0}% or exceptional win ≥{:.0}%)",
             self.count_in_window(), self.max_per_window,
-            current_loss_pct, self.emergency_stop_pct
+            pnl_pct, self.emergency_stop_pct, self.exceptional_win_pct
         ))
     }
 

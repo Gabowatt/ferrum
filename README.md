@@ -53,7 +53,6 @@ Quant-level options trading bot + TUI, powered by Alpaca Trading.
 **Key design decisions:**
 - The daemon runs independently — TUI and (eventually) web app are just clients
 - Closing the TUI does **not** stop the bot
-- Paper/live switch happens inside the daemon; clients just send the toggle command
 - All external calls go through the daemon only — never from the TUI directly
 - Options chain data comes directly from Alpaca (no Polygon dependency)
 
@@ -64,19 +63,59 @@ ferrum/
 ├── Cargo.toml              # workspace root
 ├── config.toml             # gitignored — your local keys + params
 ├── crates/
-│   ├── ferrum-core/        # shared types, traits, errors
+│   ├── ferrum-core/        # shared types, traits, indicators, errors
 │   ├── ferrum-daemon/      # core background service
 │   ├── ferrum-tui/         # ratatui frontend
 │   └── ferrum-export/      # tax/CSV export tooling
-└── ferrum-build-plan.md    # full phase-by-phase build plan
+└── docs/
+    ├── ferrum-build-plan.md           # phase-by-phase build plan
+    └── ferrum-iron-conduit-strategy.md  # full strategy specification
 ```
 
-The build plan (`ferrum-build-plan.md`) is the authoritative reference for every milestone, commit convention, dependency choice, and session checkpoint protocol. Each Claude Code session starts by reading it alongside `git log --oneline -10` and `TODO.md`.
+The build plan and strategy doc in `docs/` are the authoritative references. Each Claude Code session starts by reading the relevant doc alongside `git log --oneline -10` and `TODO.md`.
+
+## Strategy: Multi-Regime Confluence (`iron-conduit`)
+
+> Full specification: [`docs/ferrum-iron-conduit-strategy.md`](docs/ferrum-iron-conduit-strategy.md)
+
+### Overview
+
+A **probability-weighted, multi-signal confluence system** designed for a $1,000 cash account. Not a directional gamble — every entry requires multiple independent indicators to agree before a contract is selected.
+
+### How it works
+
+1. **Regime detection** — classifies each symbol as Trending Up, Trending Down, Range-Bound, or Choppy using EMA9/20/50 and ADX. Choppy = no trade.
+2. **Confluence scoring** — 11 signals scored across EMA alignment, RSI zone, MACD crossover, ADX strength, Bollinger Band position, and volume. **Minimum score of 8 required to proceed.**
+3. **Contract selection** — fetches live options chain from Alpaca, filters by delta (0.30–0.45), DTE (14–45 days), premium budget (≤$200), liquidity (OI ≥100, volume ≥50, spread ≤$0.20), and IV rank (≤60).
+4. **Position sizing** — scales by confluence score (50% / 75% / 100% of max) and IV rank.
+5. **Exit management** — tiered exits: profit target (40–50% gain), stop-loss (30% loss), time decay (DTE ≤10), and dead-money close (5 days with <5% move).
+
+### PDT protection
+
+Cash account, max **2 day trades per rolling 5-day window**. Same-day exits are only allowed if:
+- Loss ≥ 50% of premium (emergency stop), or
+- Gain ≥ 75% of premium (exceptional win — take the money), or
+- Day trade budget is not yet used
+
+Otherwise positions are held overnight and flagged for exit at next open.
+
+### Symbol universe
+
+| Tier | Symbols | Condition |
+|---|---|---|
+| 1 | SPY, QQQ, IWM | Always scan |
+| 2 | F, SOFI, PLTR, NIO, RIVN, HOOD, SNAP, AAL, CLF, T, PFE, BAC, INTC | Always scan |
+| 3 | AMD, AMZN, AAPL, MARA, COIN | Only when IV rank ≥ 40 |
+
+### Target performance
+
+- Win rate: 55–65% | Avg winner: +20–40% | Avg loser: -15–25%
+- Monthly target: 3–8% on capital | Max drawdown tolerance: 10% ($100)
 
 ## Quickstart
 
-1. Create `config.toml` with your Alpaca paper keys (see the `[alpaca.paper]` section below).
-2. Run the daemon in one terminal:
+1. Create `config.toml` with your Alpaca paper keys (see `docs/ferrum-iron-conduit-strategy.md` §13 for the full config reference).
+2. Run the daemon:
    ```
    cargo run -p ferrum-daemon
    ```
@@ -85,78 +124,7 @@ The build plan (`ferrum-build-plan.md`) is the authoritative reference for every
    cargo run -p ferrum-tui
    ```
 
-The daemon runs in the background — closing the TUI does not stop it. Send `SIGINT` (`Ctrl-C`) to the daemon process to shut it down cleanly.
-
-## Strategy: Delta Scan (`delta-scan`)
-
-> **Current status:** signals are logged only — no orders are submitted in V1 until the strategy is validated on paper.
-
-### What it does
-
-On every scan interval (default: 30s), the strategy fetches the live options chain for each configured symbol directly from Alpaca and looks for call contracts that meet the entry criteria. Any contract that passes all filters generates an `EnterLong` signal, which is logged to the TUI and passed through the risk guard before any future order submission.
-
-### Entry filters
-
-| Filter | Default | Config key | Description |
-|---|---|---|---|
-| Delta min | `0.30` | `strategy.delta_scan.delta_min` | Minimum delta — excludes far OTM contracts |
-| Delta max | `0.50` | `strategy.delta_scan.delta_max` | Maximum delta — excludes deep ITM contracts |
-| DTE min | `7` | `strategy.delta_scan.dte_min` | Minimum days to expiration |
-| DTE max | `45` | `strategy.delta_scan.dte_max` | Maximum days to expiration |
-| Quote | required | — | Contracts with no bid/ask are skipped |
-
-**Direction:** calls only (long bias). Puts and multi-leg spreads are not yet implemented.
-
-**Order type:** limit at mid-price `(bid + ask) / 2`.
-
-**Quantity:** 1 contract per signal (1 signal per qualifying contract per scan).
-
-### What it does NOT do yet
-
-- No exit logic — no stop-loss, profit target, or time-based close
-- No IV filter — raw IV is available from Alpaca but IV rank/percentile requires historical baseline
-- No position sizing beyond the fixed qty=1 per signal
-- No deduplication — the same contract can signal again on the next scan if still in range
-- No order execution in V1 — signals are observed/logged only
-
-### Risk guard (always runs before any future order)
-
-| Guard | Default | Config key |
-|---|---|---|
-| Max position size | $1,000 | `risk.max_position_usd` |
-| Daily drawdown | 2% | `risk.daily_drawdown_pct` |
-| Max open legs | 4 | `risk.max_open_legs` |
-| Live trading | hard block | `alpaca.live.enabled` |
-
-### Config reference
-
-```toml
-[strategy]
-symbols            = ["SPY", "QQQ", "AAPL"]  # symbols to scan
-scan_interval_secs = 30                        # how often to run
-
-[strategy.delta_scan]
-delta_min = 0.30   # ~30-delta call — ATM-ish
-delta_max = 0.50   # ~50-delta call — near ATM
-dte_min   = 7      # avoid gamma risk below 1 week
-dte_max   = 45     # standard 1-2 month window
-
-[risk]
-max_position_usd   = 1000   # max USD per position (options notional × 100)
-daily_drawdown_pct = 2.0    # halt if down >2% on the day
-max_open_legs      = 4      # max simultaneous option legs
-```
-
-### Suggested improvements to discuss
-
-These are the most obvious gaps to address before live trading — raise any you want to prioritize:
-
-- **Exit strategy** — profit target (e.g. 50% of premium), stop loss (e.g. 2× premium paid), or DTE-based close (e.g. exit at 21 DTE)
-- **IV filter** — only enter when IV rank is above a threshold (e.g. >30th percentile) to avoid buying expensive premium
-- **Direction bias** — add put scanning, or make direction conditional on a trend filter (e.g. price above/below 20-day EMA)
-- **Spread strategies** — vertical spreads (defined risk), iron condors, or covered calls instead of naked long calls
-- **Deduplication** — track open positions and skip contracts already held
-- **Position sizing** — scale qty based on account size and risk per trade rather than fixed qty=1
+The daemon runs independently — closing the TUI does not stop it. `Ctrl-C` the daemon to shut it down cleanly.
 
 ## Safety
 

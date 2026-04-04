@@ -68,6 +68,7 @@ async fn main() -> Result<(), FerrumError> {
         config.pdt.max_day_trades_per_5d,
         config.pdt.rolling_window_days,
         config.pdt.emergency_stop_pct,
+        config.pdt.exceptional_win_pct,
     );
     pdt_tracker.load_from_db(&db).await?;
     let dt_count = pdt_tracker.count_in_window();

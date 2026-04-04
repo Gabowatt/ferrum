@@ -2,36 +2,51 @@
 
 ## Completed this session
 
-- [x] Phase 0: workspace scaffold (Cargo.toml, config.example.toml, README, .gitignore)
-- [x] Milestone 1.1: ferrum-core — AppConfig, Mode, AlpacaClient, BotStatus, LogEvent, IPC types, Signal/OptionLeg
-- [x] Milestone 1.2: ferrum-daemon — main boot, live gate, Alpaca health check, Unix socket IPC server, SIGINT/SIGTERM shutdown
-- [x] Milestone 1.3: ferrum-daemon — SQLite schema (fills, log_events, sessions), fill sync background task (60s poll)
-- [x] Milestone 2.1: Strategy trait, scan loop wired to DeltaScanStrategy stub
-- [x] Milestone 2.2: RiskGuard — max position USD, daily drawdown, max open legs, live trading hard block
-- [x] Milestone 2.3: DeltaScanStrategy stub (Polygon fetch not yet wired)
-- [x] Milestone 3.1–3.4: ferrum-tui — full ratatui layout, IPC client, offline splash, keybindings, help overlay, log ring buffer, tail-follow scroll
-- [x] ferrum-export stub binary
+- [x] Full config schema overhaul — symbols tiers, liquidity, entry/exit, regime, IV engine, sizing, PDT
+- [x] Indicators engine — EMA 9/20/50, RSI 14, MACD (12/26/9), ADX 14, Bollinger Bands, ATR 14, HV20, volume ratio
+- [x] Regime detection — TrendingUp / TrendingDown / RangeBound / Choppy
+- [x] Confluence scoring — 11 signals, minimum score 8 gate
+- [x] PDT tracker — rolling 5-day window, emergency stop + exceptional win (≥75%) exceptions
+- [x] IV rank engine — HV proxy on startup, switches to actual IV after 30 days of snapshots
+- [x] Iron Conduit strategy — full scan loop: bars fetch → indicators → regime → confluence → options chain → delta/DTE/liquidity/IV/budget filters → contract ranking → signal
+- [x] DB schema extended — day_trades, iv_snapshots, trade_log tables
+- [x] Risk guard updated — equity floor, drawdown, position limits, cash reserve, sector cap
+- [x] Updated README with strategy summary
+- [x] Exceptional-win day trade rule added to strategy doc and implemented in PDT tracker
 
-## Next immediate step
+## Next immediate steps
 
-### Wire up Polygon options chain fetch in DeltaScanStrategy (Milestone 2.3 completion)
+### 1. TUI — PDT status panel
+Show PDT state directly in the TUI header or positions panel:
+- Day trades used / allowed in rolling window (e.g. "PDT: 1/2")
+- Color: green = budget available, yellow = 1 used, red = limit reached
+- Add `get_pdt` IPC command → daemon returns `{ used: n, max: n, resets_on: date }`
 
-1. Add `[polygon]` HTTP calls to `strategy.rs` — GET `https://api.polygon.io/v3/snapshot/options/{symbol}` with delta/DTE filtering
-2. Parse response into `OptionLeg` + emit real `EnterLong` signals
-3. Confirm log events flow from daemon → TUI log panel
+### 2. Wire exit monitoring loop
+- Add `exit_monitor_task` in daemon — runs every `exit_check_interval` (60s)
+- Fetch open positions from Alpaca `/v2/positions`
+- For each open position: fetch current quote, compute unrealized P&L %
+- Evaluate all exit conditions (profit target, stop-loss, DTE, dead money)
+- PDT-aware exit: call `pdt.check_exit_allowed()` before submitting close order
+- Log all exit decisions to TUI and trade_log table
 
-### After that
+### 3. Order submission
+- Implement actual limit order submission via Alpaca `POST /v2/orders`
+- Track order status (PENDING → FILLED / CANCELLED / EXPIRED)
+- On fill: write to fills + trade_log, update PDT tracker if day trade
 
-- Add live positions panel: GET `/v2/positions` in daemon, send via IPC `get_positions` command
-- Wire PnL month/year from Alpaca portfolio history
-- Test end-to-end: daemon running, TUI connected, [S] starts scan, log events appear in TUI
+### 4. IPC — positions panel data
+- Add `get_positions` IPC command → fetch from Alpaca and return to TUI
+- TUI positions panel currently shows placeholder — wire to live data
+
+### 5. Market hours gate
+- Daemon should check Alpaca `/v2/clock` before each scan
+- Skip scan if market is closed or outside scan_start_time / scan_end_time window
 
 ## To run locally
 
 ```bash
-cp config.example.toml config.toml
-# fill in your Alpaca paper API key/secret
-
+# config.toml must exist with your paper keys — see docs/ferrum-iron-conduit-strategy.md §13
 cargo run -p ferrum-daemon   # terminal 1
 cargo run -p ferrum-tui      # terminal 2
 ```

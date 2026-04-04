@@ -215,6 +215,7 @@ pub struct PdtConfig {
     pub max_day_trades_per_5d: u32,
     pub rolling_window_days:   u32,
     pub emergency_stop_pct:    f64,
+    pub exceptional_win_pct:   f64,
     pub block_on_limit:        bool,
 }
 
