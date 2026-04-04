@@ -1,5 +1,6 @@
 mod app;
 mod ipc;
+mod logo;
 mod ui;
 
 use std::time::Duration;

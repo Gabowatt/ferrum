@@ -9,6 +9,7 @@ use ratatui::{
 
 use ferrum_core::types::{BotStatus, LogEvent, LogLevel};
 use crate::app::App;
+use crate::logo;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // header
+            Constraint::Length(7),  // header (logo 5 + tagline + status)
             Constraint::Length(6),  // positions + pnl
             Constraint::Length(5),  // recent fills
             Constraint::Min(6),     // bot log
@@ -68,6 +69,23 @@ fn draw_offline(f: &mut Frame) {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+    // Stack: 5 logo rows + tagline + status line
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),  // pixel art
+            Constraint::Length(1),  // tagline
+            Constraint::Length(1),  // status / pdt / clock
+        ])
+        .split(area);
+
+    // Logo
+    f.render_widget(Paragraph::new(logo::logo_lines()), rows[0]);
+
+    // Tagline
+    f.render_widget(Paragraph::new(logo::tagline()), rows[1]);
+
+    // Status line
     let status_color = match app.bot_status {
         BotStatus::Running  => Color::Green,
         BotStatus::Idle     => Color::Yellow,
@@ -75,8 +93,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     };
     let time = Local::now().format("%H:%M:%S").to_string();
     let pdt_col = pdt_color(app.pdt_used, app.pdt_max);
-    let text = Line::from(vec![
-        Span::styled(" ferrum ", Style::default().add_modifier(Modifier::BOLD)),
+    let status_line = Line::from(vec![
+        Span::raw("  "),
         Span::styled(format!("[{}]", app.mode), Style::default().fg(Color::Cyan)),
         Span::raw("  "),
         Span::styled("●", Style::default().fg(status_color)),
@@ -89,7 +107,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled(time, Style::default().fg(Color::DarkGray)),
     ]);
-    f.render_widget(Paragraph::new(text), area);
+    f.render_widget(Paragraph::new(status_line), rows[2]);
 }
 
 fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
