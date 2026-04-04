@@ -29,24 +29,13 @@
 - [x] TUI positions panel — live contract rows with qty, entry price, P&L%
 - [x] TUI header — PDT: used/max with green/yellow/red color coding
 - [x] ferrum-tui — polls positions and PDT every 500ms loop tick
+- [x] Order fill poller — `order_poller.rs` confirms fills every 30s, handles cancels/expirations, records day trades on close
+- [x] EMA50 break exit — fetches underlying bars per cycle (cached per underlying), closes call if close < EMA50, put if close > EMA50
+- [x] Fixed premature position removal — exit monitor now sets `pending_close_order_id` instead of removing immediately
 
 ## Next immediate step — resume here next session
 
-### 1. Order fill status polling
-The daemon submits orders but does not yet confirm fills. Need to:
-- Add a background task that polls `GET /v2/orders?status=open` every 30s
-- On FILLED: update `open_positions` entry_price with `filled_avg_price`, log `[ORDER] FILLED`
-- On CANCELLED/EXPIRED: remove from `open_positions`, log warning
-- On close order FILLED: write trade_log close record, record day trade if same-day, remove from open_positions
-
-### 2. EMA50 break exit condition
-In `exit_monitor.rs`, the EMA50 break check is stubbed. Complete it:
-- Fetch 60 days of daily bars for the underlying when checking exits
-- Compute EMA50 via `ferrum_core::indicators::ema_last`
-- For call positions: if underlying close < EMA50 → close regardless of P&L
-- For put positions: if underlying close > EMA50 → close regardless of P&L
-
-### 3. Staged profit exits (multi-contract)
+### 1. Staged profit exits (multi-contract)
 Currently closes full position at +40%. Add staged logic:
 - qty > 1: close 50% at +30%, close remainder at +50%
 - qty == 1: close at +40% (already done)
