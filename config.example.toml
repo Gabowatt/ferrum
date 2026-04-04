@@ -1,0 +1,33 @@
+[alpaca]
+mode = "paper"              # "paper" | "live" (live disabled in v1)
+
+[alpaca.paper]
+key      = "YOUR_PAPER_KEY"
+secret   = "YOUR_PAPER_SECRET"
+base_url = "https://paper-api.alpaca.markets"
+
+# Live block exists but daemon will panic if mode = "live" in v1
+[alpaca.live]
+key      = ""
+secret   = ""
+base_url = "https://api.alpaca.markets"
+enabled  = false            # hard gate — daemon checks this on boot
+
+[polygon]
+key = "YOUR_POLYGON_KEY"
+
+[risk]
+max_position_usd   = 1000
+daily_drawdown_pct = 2.0
+max_open_legs      = 4
+
+[strategy]
+symbols             = ["SPY", "QQQ", "AAPL"]
+scan_interval_secs  = 30
+
+[strategy.delta_scan]
+delta_min     = 0.30
+delta_max     = 0.50
+iv_rank_min   = 40.0
+dte_min       = 7
+dte_max       = 45
