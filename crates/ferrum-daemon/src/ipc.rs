@@ -5,10 +5,11 @@ use tokio::{
     signal,
 };
 use tracing::{error, info, warn};
+use serde::Deserialize;
 
-use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent};
+use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position};
 
-use crate::{strategy, AppState};
+use crate::{exit_monitor, strategy, AppState};
 
 const SOCK_PATH: &str = "/tmp/ferrum.sock";
 
@@ -19,8 +20,9 @@ pub async fn run_server(state: Arc<AppState>) -> Result<(), ferrum_core::error::
     let listener = UnixListener::bind(SOCK_PATH)?;
     info!("IPC listening on {SOCK_PATH}");
 
-    // Spawn fill-sync background task.
+    // Spawn background tasks.
     tokio::spawn(crate::strategy::fill_sync_task(state.clone()));
+    tokio::spawn(exit_monitor::run_exit_monitor(state.clone()));
 
     // Graceful shutdown via SIGINT / SIGTERM.
     let state_shutdown = state.clone();
@@ -125,7 +127,76 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 Err(e)    => IpcResponse::Error { message: e.to_string() },
             }
         }
+
+        IpcCommand::GetPositions => {
+            match fetch_positions(state).await {
+                Ok(positions) => IpcResponse::Positions { positions },
+                Err(e)        => IpcResponse::Error { message: e.to_string() },
+            }
+        }
+
+        IpcCommand::GetPdt => {
+            let pdt = state.pdt.lock().await;
+            IpcResponse::PdtStatus {
+                used: pdt.count_in_window(),
+                max:  pdt.max_per_window,
+            }
+        }
     }
+}
+
+// ── Alpaca position helper ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AlpacaPositionRaw {
+    symbol:          String,
+    qty:             String,
+    unrealized_pl:   String,
+    unrealized_plpc: String,
+    current_price:   String,
+    cost_basis:      String,
+}
+
+async fn fetch_positions(state: &AppState) -> Result<Vec<Position>, ferrum_core::error::FerrumError> {
+    let raw: Vec<AlpacaPositionRaw> = state.client.get("/v2/positions").await?;
+
+    let open = state.open_positions.lock().await;
+    let positions = raw.into_iter().map(|ap| {
+        let qty:             f64 = ap.qty.parse().unwrap_or(0.0);
+        let unrealized_pl:   f64 = ap.unrealized_pl.parse().unwrap_or(0.0);
+        let unrealized_plpc: f64 = ap.unrealized_plpc.parse().unwrap_or(0.0);
+        let current_price:   f64 = ap.current_price.parse().unwrap_or(0.0);
+        let cost_basis:      f64 = ap.cost_basis.parse().unwrap_or(0.0);
+        let entry_price = if qty != 0.0 { cost_basis / (qty * 100.0) } else { 0.0 };
+
+        let (underlying, direction, opened_at) = match open.get(&ap.symbol) {
+            Some(meta) => (
+                meta.underlying.clone(),
+                meta.direction.clone(),
+                meta.opened_at,
+            ),
+            None => (
+                ap.symbol.clone(),
+                if ap.symbol.contains('C') { "call".to_string() } else { "put".to_string() },
+                chrono::Utc::now(),
+            ),
+        };
+
+        Position {
+            contract:        ap.symbol,
+            underlying,
+            direction,
+            qty,
+            entry_price,
+            current_price,
+            market_value:    current_price * qty * 100.0,
+            unrealized_pl,
+            unrealized_plpc,
+            opened_at,
+        }
+    }).collect();
+
+    Ok(positions)
 }
 
 async fn fetch_pnl(
