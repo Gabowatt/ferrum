@@ -17,7 +17,7 @@
 - [x] Risk guard — equity floor, drawdown, position limits, cash reserve, sector cap
 - [x] Exceptional-win day trade rule — added to strategy doc + implemented
 
-## Completed this session (V1 paper trading readiness)
+## Completed this session (V1 paper trading readiness + polish)
 
 - [x] Order submission — `orders.rs` submits limit orders via Alpaca `POST /v2/orders`
 - [x] Open position tracking — `OpenPositionMeta` in `AppState.open_positions`
@@ -32,6 +32,7 @@
 - [x] Order fill poller — `order_poller.rs` confirms fills every 30s, handles cancels/expirations, records day trades on close
 - [x] EMA50 break exit — fetches underlying bars per cycle (cached per underlying), closes call if close < EMA50, put if close > EMA50
 - [x] Fixed premature position removal — exit monitor now sets `pending_close_order_id` instead of removing immediately
+- [x] Pixel art FERRUM logo — 5-row block-character logo with hot-iron amber→red gradient in TUI header
 
 ## Next immediate step — resume here next session
 
@@ -39,14 +40,15 @@
 Currently closes full position at +40%. Add staged logic:
 - qty > 1: close 50% at +30%, close remainder at +50%
 - qty == 1: close at +40% (already done)
+- Only affects calls/puts independently — safe to add without changing single-contract behavior
 
-### 4. Sector concentration tracking
+### 2. Sector concentration tracking
 `RiskGuard::check_entry` has a `max_sector_positions` config but sector lookup is not wired.
 - Add sector map to config or hard-code in risk.rs
 - Before entry: count open positions in same sector via `open_positions`
 - Block if count >= max_sector_positions
 
-### 5. Export [E] keybinding in TUI
+### 3. Export [E] keybinding in TUI
 - Wire TUI `[E]` key to call `ferrum-export` binary
 - Date range picker modal → write CSV to `~/ferrum-export-YYYY.csv`
 
