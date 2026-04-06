@@ -48,6 +48,8 @@
 - [x] Fixed options chain 404 — wrong endpoint; paper trading options is free on all plans
   - Step 1: GET /v2/options/contracts (Trading API) → filter by DTE, OI, tradable
   - Step 2: GET /v1beta1/options/snapshots?feed=indicative (Data API) → greeks + quotes
+- [x] Fixed 429 rate limit — market_data_cooldown was configured but never applied; now sleeps between each symbol in scan loop
+- [x] Fixed decode error on SPY/QQQ — open_interest field is a string in API response, not a number; added open_interest_f64() helper
 
 ## Completed this session (paper trading day 1 — continued)
 

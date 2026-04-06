@@ -305,9 +305,17 @@ struct OptionContract {
     symbol:          String,
     #[serde(rename = "type")]
     contract_type:   String,
-    expiration_date: String,   // "YYYY-MM-DD"
-    open_interest:   Option<f64>,
+    expiration_date: String,           // "YYYY-MM-DD"
+    open_interest:   Option<String>,   // API returns string e.g. "17"
     tradable:        bool,
+}
+
+impl OptionContract {
+    fn open_interest_f64(&self) -> f64 {
+        self.open_interest.as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0)
+    }
 }
 
 /// Response from GET /v1beta1/options/snapshots (Data API)
@@ -399,7 +407,12 @@ impl Strategy for IronConduitStrategy {
         // Collect all symbols, respecting tier3 IV rank gate
         let all_symbols: Vec<&str> = cfg.symbols.all();
 
+        let cooldown = Duration::from_millis(
+            (cfg.strategy.market_data_cooldown * 1000) as u64
+        );
+
         for symbol in all_symbols {
+            sleep(cooldown).await;
             // Fetch daily bars for indicator computation
             let (closes, highs, lows, volumes) =
                 match Self::fetch_bars(&state.client, symbol, 90).await {
@@ -478,8 +491,7 @@ impl Strategy for IronConduitStrategy {
             let filtered_contracts: Vec<&OptionContract> = contracts_resp.option_contracts.iter()
                 .filter(|c| {
                     if !c.tradable { return false; }
-                    let oi = c.open_interest.unwrap_or(0.0);
-                    if oi < liq.min_open_interest as f64 { return false; }
+                    if c.open_interest_f64() < liq.min_open_interest as f64 { return false; }
                     if let Ok(exp) = chrono::NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
                         let dte = (exp - today).num_days();
                         dte >= entry.dte_min as i64 && dte <= entry.dte_max as i64
@@ -517,7 +529,7 @@ impl Strategy for IronConduitStrategy {
 
             // Build a lookup from contract symbol → open_interest for scoring
             let oi_map: std::collections::HashMap<&str, f64> = filtered_contracts.iter()
-                .map(|c| (c.symbol.as_str(), c.open_interest.unwrap_or(0.0)))
+                .map(|c| (c.symbol.as_str(), c.open_interest_f64()))
                 .collect();
 
             // Collect and rank qualifying contracts
