@@ -50,46 +50,37 @@
 ## Completed this session (paper trading day 1 — continued)
 
 - [x] Tokyo Night color scheme in TUI (blue/cyan/green/yellow/orange/red/purple on dark)
+- [x] Anvil logo updated to Tokyo Night gradient (cyan → blue → dim)
 - [x] Bot log panel now polls GetLogs every 2s — scan summaries visible without entering a position
+- [x] Expanded tier2 symbol universe (+10 names); trimmed 5 dead/illiquid tickers (PARA, WBA, X, NOK, GOLD)
 - [ ] Single-terminal daemon launch from TUI — deferred, needs more thought
 
-## Next immediate step — resume here next session
+## Next session — resume here
 
-### 1. Dynamic / staged profit exits
-Replace the fixed +40% profit target with a smarter exit system:
-- **Trailing profit target**: once P&L exceeds a threshold (e.g. +30%), the exit level trails the peak P&L by a fixed offset (e.g. 15%), locking in gains as the contract appreciates
-- **Staged closes (qty > 1)**: close 50% at first target, let remainder trail independently
-- qty == 1: trailing target only (no split needed)
-- Design TBD — revisit after paper trading gives real P&L distribution data
+### Priority 1 — watch paper trading data
+Let the bot run for a few days and observe:
+- Which symbols consistently score highest (approaching 8)
+- Whether options chain fetches succeed (free tier may gate /v2/snapshots/options)
+- P&L distribution when first positions are entered
 
-### 2. Sector concentration tracking
-`RiskGuard::check_entry` has a `max_sector_positions` config but sector lookup is not wired.
+### Priority 2 — dynamic / staged profit exits
+Design TBD after real P&L data — revisit once positions have been entered:
+- Trailing profit target (once P&L > +30%, trail peak by 15%)
+- Staged closes for qty > 1 (50% at first target, remainder trails)
+
+### Priority 3 — sector concentration tracking
+`RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
 - Add sector map to config or hard-code in risk.rs
-- Before entry: count open positions in same sector via `open_positions`
-- Block if count >= max_sector_positions
+- Block entry if open positions in same sector >= max_sector_positions
 
-### 3. Export [E] keybinding in TUI
+### Priority 4 — TUI polish (when ready)
+- `[E]` export keybinding → write CSV to `~/ferrum-export-YYYY.csv`
+- `[P]` privacy toggle — hide PnL values (show `****`)
+- `[B]` buying power panel — free cash + used margin
 
-### 4. TUI privacy toggles
-- `[P]` key — toggle PnL panel visibility (hide today/month/year values, show `****`)
-- `[B]` key — toggle buying power panel in positions area: show free cash + used margin
-  (free: available buying power, used: sum of open position market values)
-- Useful when screen-sharing or recording
-- Wire TUI `[E]` key to call `ferrum-export` binary
-- Date range picker modal → write CSV to `~/ferrum-export-YYYY.csv`
-
-## To run for paper trading (Monday)
+## To run
 
 ```bash
-# 1. Ensure config.toml has your Alpaca paper keys
-cargo run -p ferrum-daemon   # terminal 1 — leave running
+cargo run -p ferrum-daemon   # terminal 1 — leave running, press nothing
 cargo run -p ferrum-tui      # terminal 2 — press [S] to start strategy
 ```
-
-The daemon will:
-- Connect to Alpaca paper account
-- Wait for market open (09:45 ET)
-- Scan every 5 minutes across all symbol tiers
-- Submit limit orders at mid-price when confluence score ≥ 8
-- Monitor open positions every 60s for exit conditions
-- Never exceed 2 day trades in a rolling 5-day window
