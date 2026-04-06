@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::warn;
 use chrono::Utc;
 
 use ferrum_core::types::LogEvent;
@@ -67,11 +66,11 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             state.open_positions.lock().await.remove(&contract);
                         }
                         other => {
-                            warn!("order {entry_id} for {contract} has unexpected status: {other}");
+                            let _ = state.log_tx.send(LogEvent::warn(format!("order {entry_id} for {contract} has unexpected status: {other}")));
                         }
                     },
                     Err(e) => {
-                        warn!("could not fetch entry order {entry_id}: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("could not fetch entry order {entry_id}: {e}")));
                     }
                 }
             }
@@ -147,11 +146,11 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             }
                         }
                         other => {
-                            warn!("close order {close_id} for {contract}: unexpected status {other}");
+                            let _ = state.log_tx.send(LogEvent::warn(format!("close order {close_id} for {contract}: unexpected status {other}")));
                         }
                     },
                     Err(e) => {
-                        warn!("could not fetch close order {close_id}: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("could not fetch close order {close_id}: {e}")));
                     }
                 }
             }

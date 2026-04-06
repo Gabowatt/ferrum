@@ -401,7 +401,7 @@ impl Strategy for IronConduitStrategy {
                 match Self::fetch_bars(&state.client, symbol, 90).await {
                     Ok(data) => data,
                     Err(e) => {
-                        warn!("[iron-conduit] {symbol} bars fetch failed: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} bars fetch failed: {e}")));
                         continue;
                     }
                 };
@@ -462,7 +462,7 @@ impl Strategy for IronConduitStrategy {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("[iron-conduit] {symbol} chain fetch failed: {e}");
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} chain fetch failed: {e}")));
                     continue;
                 }
             };

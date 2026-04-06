@@ -43,7 +43,7 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
     let alpaca_positions: Vec<AlpacaPosition> = match state.client.get("/v2/positions").await {
         Ok(v)  => v,
         Err(e) => {
-            warn!("exit monitor: /v2/positions failed: {e}");
+            let _ = state.log_tx.send(LogEvent::warn(format!("exit monitor: /v2/positions failed: {e}")));
             return Ok(());
         }
     };
