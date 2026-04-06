@@ -82,6 +82,13 @@ impl IpcClient {
         }
     }
 
+    pub async fn request_logs(&mut self, limit: u32) -> Result<Vec<LogEvent>, Box<dyn std::error::Error>> {
+        match self.send_cmd(IpcCommand::GetLogs { limit }).await? {
+            IpcResponse::Logs { events } => Ok(events),
+            other => Err(format!("unexpected response: {other:?}").into()),
+        }
+    }
+
     /// Drain any buffered log events.
     pub fn poll_log_event(&mut self) -> Option<LogEvent> {
         self.log_buffer.pop_front()
