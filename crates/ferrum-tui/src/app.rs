@@ -5,9 +5,8 @@ use ferrum_core::types::{BotStatus, FillRecord, LogEvent, Position};
 pub const LOG_RING_SIZE: usize = 500;
 
 pub struct App {
-    pub daemon_online:   bool,
-    pub daemon_managed:  bool,  // true if TUI spawned the daemon process
-    pub bot_status:      BotStatus,
+    pub daemon_online: bool,
+    pub bot_status:    BotStatus,
     pub mode:            String,
 
     pub pnl_today: f64,
@@ -32,9 +31,8 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            daemon_online:   false,
-            daemon_managed:  false,
-            bot_status:      BotStatus::Idle,
+            daemon_online: false,
+            bot_status:    BotStatus::Idle,
             mode:            "PAPER".to_string(),
             pnl_today:       0.0,
             pnl_month:       0.0,

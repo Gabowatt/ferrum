@@ -51,9 +51,7 @@
 
 - [x] Tokyo Night color scheme in TUI (blue/cyan/green/yellow/orange/red/purple on dark)
 - [x] Bot log panel now polls GetLogs every 2s — scan summaries visible without entering a position
-- [x] [D] keybinding launches/kills ferrum-daemon from within TUI (single terminal workflow)
-- [x] Offline splash updated — shows [D] hint; [managed] badge in header when TUI owns daemon
-- [x] draw_keybindings updated to show [D] label dynamically (Launch / Kill)
+- [ ] Single-terminal daemon launch from TUI — deferred, needs more thought
 
 ## Next immediate step — resume here next session
 

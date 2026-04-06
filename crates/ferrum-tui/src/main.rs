@@ -40,9 +40,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
         app.daemon_online = true;
     }
 
-    // Child process handle when TUI spawns the daemon.
-    let mut daemon_process: Option<tokio::process::Child> = None;
-
     let mut last_clock_poll = std::time::Instant::now()
         - std::time::Duration::from_secs(61);
     let mut last_log_poll = std::time::Instant::now()
@@ -50,7 +47,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
 
     loop {
         if let Some(ref mut client) = ipc {
-            // ── Status ────────────────────────────────────────────────────────
             match client.request_status().await {
                 Ok(IpcResponse::Status { status, mode }) => {
                     app.daemon_online = true;
@@ -87,7 +83,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     last_clock_poll = std::time::Instant::now();
                 }
 
-                // ── Log polling ───────────────────────────────────────────────
+                // Poll log events from DB every 2s.
                 if last_log_poll.elapsed() >= Duration::from_secs(2) {
                     if let Ok(events) = client.request_logs(200).await {
                         for ev in events {
@@ -105,8 +101,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                 }
             }
         } else {
-            // Retry IPC connection (daemon may have just started).
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Retry IPC connection.
             ipc = ipc::IpcClient::connect().await;
             if ipc.is_some() {
                 app.daemon_online = true;
@@ -121,7 +116,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     (KeyCode::Char('q'), _) | (KeyCode::Char('Q'), _) => break,
                     (KeyCode::Char('c'), KeyModifiers::CONTROL)        => break,
 
-                    // ── Strategy start / stop ─────────────────────────────────
                     (KeyCode::Char('s'), _) | (KeyCode::Char('S'), _) => {
                         if let Some(ref mut client) = ipc {
                             let _ = client.send_start().await;
@@ -132,32 +126,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                             let _ = client.send_stop().await;
                         }
                     }
-
-                    // ── Daemon launch / kill ──────────────────────────────────
-                    (KeyCode::Char('d'), _) | (KeyCode::Char('D'), _) => {
-                        if let Some(ref mut child) = daemon_process {
-                            let _ = child.kill().await;
-                            daemon_process     = None;
-                            ipc                = None;
-                            app.daemon_online  = false;
-                            app.daemon_managed = false;
-                        } else {
-                            // Spawn the compiled daemon binary.
-                            let bin = std::env::current_dir()
-                                .unwrap_or_default()
-                                .join("target/debug/ferrum-daemon");
-                            match tokio::process::Command::new(bin).spawn() {
-                                Ok(child) => {
-                                    daemon_process     = Some(child);
-                                    app.daemon_managed = true;
-                                    // Give it a moment to bind the socket.
-                                    tokio::time::sleep(Duration::from_secs(2)).await;
-                                }
-                                Err(_) => {}
-                            }
-                        }
-                    }
-
                     (KeyCode::Char('?'), _) => {
                         app.show_help = !app.show_help;
                     }
@@ -183,11 +151,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                 app.push_log(event);
             }
         }
-    }
-
-    // If TUI owns the daemon, shut it down on exit.
-    if let Some(ref mut child) = daemon_process {
-        let _ = child.kill().await;
     }
 
     Ok(())

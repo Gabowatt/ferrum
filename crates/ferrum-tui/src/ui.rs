@@ -52,7 +52,7 @@ fn pdt_color(used: u32, max: u32) -> Color {
 
 pub fn draw(f: &mut Frame, app: &App) {
     if !app.daemon_online {
-        draw_offline(f, app);
+        draw_offline(f);
         return;
     }
 
@@ -72,7 +72,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_positions_pnl(f, chunks[1], app);
     draw_fills(f, chunks[2], app);
     draw_log(f, chunks[3], app);
-    draw_keybindings(f, chunks[4], app);
+    draw_keybindings(f, chunks[4]);
 
     if app.show_help {
         draw_help_overlay(f, area);
@@ -81,22 +81,17 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 // ── Offline splash ────────────────────────────────────────────────────────────
 
-fn draw_offline(f: &mut Frame, app: &App) {
+fn draw_offline(f: &mut Frame) {
     let area = f.area();
-    let hint = if app.daemon_managed {
-        "  starting daemon…"
-    } else {
-        "  cargo run -p ferrum-daemon   or press [D] to launch"
-    };
     let msg = vec![
         Line::from(Span::styled(
             "ferrum daemon is offline",
             Style::default().fg(RED).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(hint, normal())),
+        Line::from(Span::styled("  cargo run -p ferrum-daemon", normal())),
         Line::from(""),
-        Line::from(Span::styled("[D] Launch daemon  [Q] Quit", dim())),
+        Line::from(Span::styled("[Q] Quit", dim())),
     ];
     f.render_widget(
         Paragraph::new(msg)
@@ -143,7 +138,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let time = Local::now().format("%H:%M:%S").to_string();
     let pdt_col = pdt_color(app.pdt_used, app.pdt_max);
 
-    let mut status_spans = vec![
+    let status_line = Line::from(vec![
         Span::raw("  "),
         Span::styled(format!("[{}]", app.mode), Style::default().fg(CYAN)),
         Span::raw("  "),
@@ -158,13 +153,8 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(next, dim()),
         Span::raw("  "),
         Span::styled(time, dim()),
-    ];
-    if app.daemon_managed {
-        status_spans.push(Span::raw("  "));
-        status_spans.push(Span::styled("[managed]", Style::default().fg(PURPLE)));
-    }
-
-    f.render_widget(Paragraph::new(Line::from(status_spans)), rows[2]);
+    ]);
+    f.render_widget(Paragraph::new(status_line), rows[2]);
 }
 
 // ── Positions + PnL ───────────────────────────────────────────────────────────
@@ -278,13 +268,11 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
 
 // ── Keybindings bar ───────────────────────────────────────────────────────────
 
-fn draw_keybindings(f: &mut Frame, area: Rect, app: &App) {
-    let d_label = if app.daemon_managed { " Kill daemon  " } else { " Launch daemon  " };
+fn draw_keybindings(f: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         Span::raw(" "),
         Span::styled("[S]", Style::default().fg(GREEN)),  Span::styled(" Start  ", dim()),
         Span::styled("[X]", Style::default().fg(RED)),    Span::styled(" Stop  ", dim()),
-        Span::styled("[D]", Style::default().fg(PURPLE)), Span::styled(d_label, dim()),
         Span::styled("[E]", Style::default().fg(YELLOW)), Span::styled(" Export  ", dim()),
         Span::styled("[Q]", dim()),                       Span::styled(" Quit  ", dim()),
         Span::styled("[?]", dim()),                       Span::styled(" Help", dim()),
