@@ -44,6 +44,8 @@
 - [x] Restart daemon to activate log persistence
 - [x] Fixed EDT/EST bug in scan window check — was hardcoded to UTC-5, now uses UTC-4 Mar–Nov
 - [x] COIN bars 404 on IEX feed — expected, gracefully skipped; left in config intentionally
+- [x] All symbols 404 on bars/options — root cause: bars + options snapshot calls were hitting paper-api.alpaca.markets instead of data.alpaca.markets; fixed by adding get_data_with_query() to AlpacaClient using DATA_URL constant
+- [ ] Options chain (/v2/snapshots/options) may still 404 on free Alpaca tier — upgrade to Algo Trader Plus in V3
 
 ## Next immediate step — resume here next session
 

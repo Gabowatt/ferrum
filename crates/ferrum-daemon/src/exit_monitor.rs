@@ -205,7 +205,7 @@ async fn fetch_ema50(state: &AppState, underlying: &str) -> Option<f64> {
     struct Bar { #[serde(rename = "c")] close: f64 }
 
     let resp: BarsResp = state.client
-        .get_with_query(
+        .get_data_with_query(
             &format!("/v2/stocks/{underlying}/bars"),
             &[("timeframe", "1Day"), ("start", &start), ("limit", "100"), ("feed", "iex")],
         )

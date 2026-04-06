@@ -348,7 +348,7 @@ impl IronConduitStrategy {
             .format("%Y-%m-%dT00:00:00Z").to_string();
 
         let resp: BarsResponse = client
-            .get_with_query(
+            .get_data_with_query(
                 &format!("/v2/stocks/{symbol}/bars"),
                 &[
                     ("timeframe", "1Day"),
@@ -449,7 +449,7 @@ impl Strategy for IronConduitStrategy {
 
             // Fetch options chain
             let chain_resp: OptionsSnapshotResponse = match state.client
-                .get_with_query(
+                .get_data_with_query(
                     &format!("/v2/snapshots/options/{symbol}"),
                     &[
                         ("expiration_date_gte", exp_min.as_str()),
