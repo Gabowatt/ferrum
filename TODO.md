@@ -34,6 +34,17 @@
 - [x] Fixed premature position removal — exit monitor now sets `pending_close_order_id` instead of removing immediately
 - [x] Pixel art FERRUM logo — 5-row block-character logo with hot-iron amber→red gradient in TUI header
 
+## Completed this session (paper trading day 1 — 2026-04-06)
+
+- [x] Diagnosed empty `log_events` table — `log_tx` broadcast had no DB subscriber
+- [x] Added log persistence task in `ferrum-daemon/src/main.rs` — subscribes to `log_tx`, writes every event to SQLite via `db.insert_log()`
+- [x] Added `db.recent_logs(limit)` query method
+- [x] Added `GetLogs { limit }` IPC command + `Logs { events }` IPC response to `ferrum-core/src/types.rs`
+- [x] Wired `GetLogs` handler in `ferrum-daemon/src/ipc.rs`
+- [x] Restart daemon to activate log persistence
+- [x] Fixed EDT/EST bug in scan window check — was hardcoded to UTC-5, now uses UTC-4 Mar–Nov
+- [x] COIN bars 404 on IEX feed — expected, gracefully skipped; left in config intentionally
+
 ## Next immediate step — resume here next session
 
 ### 1. Dynamic / staged profit exits

@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 use serde::Deserialize;
-use chrono::{Timelike, Utc};
+use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     client::AlpacaClient,
@@ -54,11 +54,11 @@ async fn market_is_open(state: &AppState) -> bool {
         return false;
     }
 
-    // Check configured ET scan window using UTC time offset (-5 or -4 for EDT)
-    // We parse HH:MM from scan_start_time / scan_end_time and compare against
-    // current UTC time shifted by -5 (ET, approximate).
-    let et_offset_hours: i64 = -5; // EST; -4 for EDT (conservative)
+    // Check configured ET scan window using UTC time offset.
+    // EDT (UTC-4) Mar–Nov, EST (UTC-5) Nov–Mar.
     let now_utc = Utc::now();
+    let month = now_utc.month();
+    let et_offset_hours: i64 = if month >= 3 && month <= 11 { -4 } else { -5 };
     let et_hour = (now_utc.hour() as i64 + et_offset_hours).rem_euclid(24) as u32;
     let et_min  = now_utc.minute();
     let et_mins = et_hour * 60 + et_min;

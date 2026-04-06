@@ -145,6 +145,33 @@ impl Database {
         Ok(())
     }
 
+    pub async fn recent_logs(&self, limit: i64) -> Result<Vec<ferrum_core::types::LogEvent>, FerrumError> {
+        use ferrum_core::types::{LogEvent, LogLevel};
+        let rows = sqlx::query(
+            "SELECT timestamp, level, message FROM log_events ORDER BY id DESC LIMIT ?"
+        ).bind(limit).fetch_all(&self.pool).await?;
+
+        let mut events: Vec<LogEvent> = rows.iter().map(|r| {
+            let ts: String  = r.try_get("timestamp").unwrap_or_default();
+            let lv: String  = r.try_get("level").unwrap_or_default();
+            let msg: String = r.try_get("message").unwrap_or_default();
+            let timestamp = DateTime::parse_from_rfc3339(&ts)
+                .map(|t| t.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let level = match lv.as_str() {
+                "SIGNAL" => LogLevel::Signal,
+                "ORDER"  => LogLevel::Order,
+                "RISK"   => LogLevel::Risk,
+                "ERROR"  => LogLevel::Error,
+                "WARN"   => LogLevel::Warn,
+                _        => LogLevel::Info,
+            };
+            LogEvent { timestamp, level, message: msg }
+        }).collect();
+        events.reverse(); // oldest first
+        Ok(events)
+    }
+
     // ── Sessions ──────────────────────────────────────────────────────────────
 
     pub async fn start_session(&self, mode: &str) -> Result<i64, FerrumError> {

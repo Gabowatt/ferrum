@@ -112,10 +112,20 @@ async fn main() -> Result<(), FerrumError> {
         open_positions: Mutex::new(std::collections::HashMap::new()),
     });
 
-    let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
+    // Persist log events to SQLite — subscribe before the first send.
+    {
+        let mut log_rx = log_tx.subscribe();
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            while let Ok(ev) = log_rx.recv().await {
+                let ts = ev.timestamp.to_rfc3339();
+                let lv = ev.level.to_string();
+                let _ = db.insert_log(&ts, &lv, &ev.message).await;
+            }
+        });
+    }
 
-    // Fill sync background task
-    tokio::spawn(strategy::fill_sync_task(state.clone()));
+    let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
 
     info!("Starting IPC server on /tmp/ferrum.sock");
     ipc::run_server(state.clone()).await?;

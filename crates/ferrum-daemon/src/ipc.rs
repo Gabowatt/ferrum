@@ -150,6 +150,13 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 Err(e)   => IpcResponse::Error { message: e.to_string() },
             }
         }
+
+        IpcCommand::GetLogs { limit } => {
+            match state.db.recent_logs(limit as i64).await {
+                Ok(events) => IpcResponse::Logs { events },
+                Err(e)     => IpcResponse::Error { message: e.to_string() },
+            }
+        }
     }
 }
 
