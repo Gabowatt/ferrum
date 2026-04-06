@@ -292,6 +292,25 @@ struct Bar {
     #[serde(rename = "vw")] vwap:   Option<f64>,
 }
 
+// ── Options API response types ────────────────────────────────────────────────
+
+/// Response from GET /v2/options/contracts (Trading API)
+#[derive(Debug, Deserialize)]
+struct ContractsResponse {
+    option_contracts: Vec<OptionContract>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OptionContract {
+    symbol:          String,
+    #[serde(rename = "type")]
+    contract_type:   String,
+    expiration_date: String,   // "YYYY-MM-DD"
+    open_interest:   Option<f64>,
+    tradable:        bool,
+}
+
+/// Response from GET /v1beta1/options/snapshots (Data API)
 #[derive(Debug, Deserialize)]
 struct OptionsSnapshotResponse {
     snapshots: std::collections::HashMap<String, OptionSnapshot>,
@@ -299,14 +318,11 @@ struct OptionsSnapshotResponse {
 
 #[derive(Debug, Deserialize)]
 struct OptionSnapshot {
-    #[serde(rename = "greeks")]
-    greeks: Option<Greeks>,
+    greeks:                  Option<Greeks>,
     #[serde(rename = "impliedVolatility")]
-    iv:     Option<f64>,
+    iv:                      Option<f64>,
     #[serde(rename = "latestQuote")]
-    quote:  Option<OptionQuote>,
-    #[serde(rename = "details")]
-    details: Option<ContractDetails>,
+    quote:                   Option<OptionQuote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -318,18 +334,6 @@ struct Greeks {
 struct OptionQuote {
     #[serde(rename = "ap")] ask: Option<f64>,
     #[serde(rename = "bp")] bid: Option<f64>,
-    #[serde(rename = "as")] ask_size: Option<f64>,
-    #[serde(rename = "bs")] bid_size: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContractDetails {
-    #[serde(rename = "expirationDate")]
-    expiration_date: Option<String>,
-    #[serde(rename = "openInterest")]
-    open_interest:   Option<f64>,
-    #[serde(rename = "type")]
-    contract_type:   Option<String>,
 }
 
 // ── Iron Conduit Strategy ─────────────────────────────────────────────────────
@@ -447,38 +451,83 @@ impl Strategy for IronConduitStrategy {
                 TradeDirection::Put  => "put",
             };
 
-            // Fetch options chain
-            let chain_resp: OptionsSnapshotResponse = match state.client
-                .get_data_with_query(
-                    &format!("/v2/snapshots/options/{symbol}"),
+            // ── Step 1: fetch contract list from Trading API ──────────────────
+            let contracts_resp: ContractsResponse = match state.client
+                .get_with_query(
+                    "/v2/options/contracts",
                     &[
+                        ("underlying_symbols", symbol),
                         ("expiration_date_gte", exp_min.as_str()),
                         ("expiration_date_lte", exp_max.as_str()),
                         ("type", contract_type_str),
-                        ("limit", "250"),
+                        ("status", "active"),
+                        ("limit", "200"),
                     ],
                 )
                 .await
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} chain fetch failed: {e}")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} contracts fetch failed: {e}")));
                     continue;
                 }
             };
 
-            // Collect and rank qualifying contracts
-            let mut candidates: Vec<(&String, &OptionSnapshot, f64, f64, f64)> = Vec::new();
+            // Pre-filter by tradable + DTE + open interest
+            let today = Utc::now().date_naive();
+            let filtered_contracts: Vec<&OptionContract> = contracts_resp.option_contracts.iter()
+                .filter(|c| {
+                    if !c.tradable { return false; }
+                    let oi = c.open_interest.unwrap_or(0.0);
+                    if oi < liq.min_open_interest as f64 { return false; }
+                    if let Ok(exp) = chrono::NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
+                        let dte = (exp - today).num_days();
+                        dte >= entry.dte_min as i64 && dte <= entry.dte_max as i64
+                    } else {
+                        false
+                    }
+                })
+                .collect();
 
-            for (contract, snap_opt) in &chain_resp.snapshots {
+            if filtered_contracts.is_empty() {
+                info!("[iron-conduit] {symbol}: no contracts passed DTE/OI filter");
+                continue;
+            }
+
+            // ── Step 2: fetch snapshots from Data API (indicative = free feed) ─
+            let symbols_csv: String = filtered_contracts.iter()
+                .take(100)  // API limit per request
+                .map(|c| c.symbol.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let snapshot_resp: OptionsSnapshotResponse = match state.client
+                .get_data_with_query(
+                    "/v1beta1/options/snapshots",
+                    &[("symbols", &symbols_csv), ("feed", "indicative")],
+                )
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} snapshots fetch failed: {e}")));
+                    continue;
+                }
+            };
+
+            // Build a lookup from contract symbol → open_interest for scoring
+            let oi_map: std::collections::HashMap<&str, f64> = filtered_contracts.iter()
+                .map(|c| (c.symbol.as_str(), c.open_interest.unwrap_or(0.0)))
+                .collect();
+
+            // Collect and rank qualifying contracts
+            let mut candidates: Vec<(String, f64, f64, f64)> = Vec::new(); // (symbol, mid, delta_score, oi)
+
+            for (contract, snap_opt) in &snapshot_resp.snapshots {
                 let delta = snap_opt.greeks.as_ref().and_then(|g| g.delta).unwrap_or(0.0);
                 let delta_abs = delta.abs();
 
                 if delta_abs < entry.delta_min || delta_abs > entry.delta_max { continue; }
-
-                // Liquidity checks
-                let oi = snap_opt.details.as_ref().and_then(|d| d.open_interest).unwrap_or(0.0);
-                if oi < liq.min_open_interest as f64 { continue; }
 
                 let (bid, ask) = match &snap_opt.quote {
                     Some(q) => match (q.bid, q.ask) {
@@ -491,7 +540,6 @@ impl Strategy for IronConduitStrategy {
                 if ask - bid > liq.max_bid_ask_spread { continue; }
                 if ask <= 0.0 { continue; }
 
-                // Premium budget check
                 let mid = (bid + ask) / 2.0;
                 if mid * 100.0 > cfg.sizing.max_position_usd { continue; }
 
@@ -504,7 +552,6 @@ impl Strategy for IronConduitStrategy {
                         iv_rank: 50.0, current_iv, method: crate::iv_rank::IvMethod::HvProxy,
                     });
 
-                // Tier 3 symbols require elevated IV rank
                 if cfg.symbols.tier_of(symbol) == Some(3)
                     && iv_result.iv_rank < cfg.symbols.tier3_iv_rank_min
                 {
@@ -520,21 +567,21 @@ impl Strategy for IronConduitStrategy {
                 // Store IV snapshot
                 let _ = state.db.upsert_iv_snapshot(symbol, current_iv, snap.hv20, iv_result.iv_rank).await;
 
-                // Score contract: prefer delta closest to preferred, tightest spread, highest OI
                 let delta_score = (delta_abs - entry.preferred_delta).abs();
-                candidates.push((contract, snap_opt, mid, delta_score, oi));
+                let oi = *oi_map.get(contract.as_str()).unwrap_or(&0.0);
+                candidates.push((contract.clone(), mid, delta_score, oi));
             }
 
-            // Rank: lowest delta_score first, then highest OI
+            // Rank: closest delta to preferred first, then highest OI
             candidates.sort_by(|a, b| {
-                a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)
-                    .then(b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal))
+                a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
             });
 
-            if let Some((contract, _, mid, delta_score, oi)) = candidates.first() {
-                let size_factor  = cfg.sizing.size_factor_for(score);
-                let iv_adj       = iv_engine.size_factor(0.0); // default 1.0 — refined per contract above
-                let qty          = ((cfg.sizing.max_position_usd * size_factor * iv_adj)
+            if let Some((contract, mid, delta_score, oi)) = candidates.first() {
+                let size_factor = cfg.sizing.size_factor_for(score);
+                let iv_adj      = iv_engine.size_factor(0.0);
+                let qty         = ((cfg.sizing.max_position_usd * size_factor * iv_adj)
                     / (mid * 100.0))
                     .floor() as u32;
                 let qty = qty.max(1);
@@ -552,7 +599,7 @@ impl Strategy for IronConduitStrategy {
                 signals.push(Signal::EnterLong {
                     symbol: symbol.to_string(),
                     legs: vec![OptionLeg {
-                        contract:    (*contract).clone(),
+                        contract:   contract.clone(),
                         action,
                         qty,
                         order_type:  OrderType::Limit,

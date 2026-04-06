@@ -45,7 +45,9 @@
 - [x] Fixed EDT/EST bug in scan window check — was hardcoded to UTC-5, now uses UTC-4 Mar–Nov
 - [x] COIN bars 404 on IEX feed — expected, gracefully skipped; left in config intentionally
 - [x] All symbols 404 on bars/options — root cause: bars + options snapshot calls were hitting paper-api.alpaca.markets instead of data.alpaca.markets; fixed by adding get_data_with_query() to AlpacaClient using DATA_URL constant
-- [ ] Options chain (/v2/snapshots/options) may still 404 on free Alpaca tier — upgrade to Algo Trader Plus in V3
+- [x] Fixed options chain 404 — wrong endpoint; paper trading options is free on all plans
+  - Step 1: GET /v2/options/contracts (Trading API) → filter by DTE, OI, tradable
+  - Step 2: GET /v1beta1/options/snapshots?feed=indicative (Data API) → greeks + quotes
 
 ## Completed this session (paper trading day 1 — continued)
 
