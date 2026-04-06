@@ -3,8 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-// Palette: #1b2021 → #51513d → #a6a867 → #e3dc95 → #e3dcc2
-// Used as a top-lit gradient (cream = highlight, dark olive = shadow/base)
+// Tokyo Night gradient: dark → blue → cyan → bright
 //
 // Anvil icon — front silhouette with horn on left:
 //
@@ -23,11 +22,11 @@ const ICON: &[&str] = &[
 ];
 
 const ICON_COLORS: &[Color] = &[
-    Color::Rgb(227, 220, 194),  // #e3dcc2  cream   — top highlight
-    Color::Rgb(227, 220, 149),  // #e3dc95  warm    — upper face
-    Color::Rgb(166, 168, 103),  // #a6a867  olive   — mid body
-    Color::Rgb( 81,  81,  61),  // #51513d  d-olive — waist shadow
-    Color::Rgb( 81,  81,  61),  // #51513d  d-olive — base
+    Color::Rgb(125, 207, 255),  // #7dcfff  cyan    — top highlight
+    Color::Rgb(122, 162, 247),  // #7aa2f7  blue    — upper face
+    Color::Rgb(122, 162, 247),  // #7aa2f7  blue    — mid body
+    Color::Rgb( 65,  72, 104),  // #414868  dim     — waist shadow
+    Color::Rgb( 86,  95, 137),  // #565f89  mid     — base
 ];
 
 /// Returns the 5 icon lines with top-lit gradient coloring.
@@ -44,6 +43,6 @@ pub fn logo_lines() -> Vec<Line<'static>> {
 pub fn tagline() -> Line<'static> {
     Line::from(Span::styled(
         "  ferrum — quant options trader",
-        Style::default().fg(Color::Rgb(81, 81, 61)),
+        Style::default().fg(Color::Rgb(86, 95, 137)),
     ))
 }
