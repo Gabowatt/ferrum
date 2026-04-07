@@ -38,6 +38,9 @@ pub struct OpenPositionMeta {
     /// Order ID of a pending close order (set when exit monitor submits close).
     pub pending_close_order_id: Option<String>,
     pub force_exit_next_open:  bool,
+    /// Highest unrealized P&L % seen since entry — used for trailing profit target.
+    /// Initialized to f64::NEG_INFINITY; updated each exit-monitor cycle.
+    pub peak_pnl_pct:          f64,
 }
 
 #[derive(Debug)]

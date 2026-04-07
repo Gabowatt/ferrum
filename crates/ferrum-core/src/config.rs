@@ -122,9 +122,16 @@ pub struct EntryConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExitConfig {
+    // ── Trailing profit target ────────────────────────────────────────────────
+    /// Once unrealized P&L reaches this %, begin tracking the peak and trailing.
+    pub trailing_activation_pct:  f64,
+    /// Close if current P&L falls this many points below the observed peak P&L.
+    /// E.g. peak=35%, gap=7% → close trigger at 28%.
+    pub trailing_trail_gap_pct:   f64,
+    // ── Legacy fixed targets (kept for reference; trailing takes precedence) ──
     pub profit_target_partial_pct: f64,
     pub profit_target_full_pct:    f64,
-    pub profit_target_single_pct:  f64,
+    // ── Other exits ───────────────────────────────────────────────────────────
     pub stop_loss_pct:             f64,
     pub emergency_stop_pct:        f64,
     pub time_exit_dte:             u32,

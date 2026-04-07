@@ -206,6 +206,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
                     pending_order_id:           Some(order.id),
                     pending_close_order_id:     None,
                     force_exit_next_open:       false,
+                    peak_pnl_pct:              f64::NEG_INFINITY,
                 };
                 state.open_positions.lock().await.insert(leg.contract.clone(), meta);
             }

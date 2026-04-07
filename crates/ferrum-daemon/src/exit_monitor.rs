@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::info;
 use serde::Deserialize;
 use chrono::Utc;
 
@@ -70,7 +69,6 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
 
         // Skip if we already have a pending close order out
         if meta.pending_close_order_id.is_some() {
-            info!("exit monitor: {} has pending close order — waiting for fill", ap.symbol);
             continue;
         }
 
@@ -88,13 +86,30 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             }
         };
 
+        // ── Update peak P&L for trailing profit target ────────────────────────
+        {
+            let mut positions = state.open_positions.lock().await;
+            if let Some(m) = positions.get_mut(&ap.symbol) {
+                if pnl_pct > m.peak_pnl_pct {
+                    m.peak_pnl_pct = pnl_pct;
+                }
+            }
+        }
+        let peak_pnl = meta.peak_pnl_pct.max(pnl_pct);  // use updated peak
+
+        // ── Trailing profit target ────────────────────────────────────────────
+        // Activates once P&L >= trailing_activation_pct.
+        // Closes when P&L drops trailing_trail_gap_pct below observed peak.
+        let trailing_triggered = peak_pnl >= exit_cfg.trailing_activation_pct
+            && pnl_pct <= peak_pnl - exit_cfg.trailing_trail_gap_pct;
+
         // ── Exit priority order ───────────────────────────────────────────────
         let exit_reason: Option<&str> = if pnl_pct <= -(exit_cfg.stop_loss_pct) {
             Some("stop_loss")
         } else if dte <= exit_cfg.theta_exit_dte && pnl_pct < exit_cfg.theta_exit_min_pnl_pct {
             Some("theta_exit")
-        } else if pnl_pct >= exit_cfg.profit_target_single_pct {
-            Some("profit_target")
+        } else if trailing_triggered {
+            Some("trailing_profit")
         } else if ema50_broken {
             Some("ema50_break")
         } else if dte <= exit_cfg.time_exit_dte {
@@ -112,8 +127,10 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             None    => continue,
         };
 
-        info!("exit monitor: {} → {} (pnl={:.1}% dte={} days_held={})",
-            ap.symbol, exit_reason, pnl_pct, dte, days_held);
+        let _ = state.log_tx.send(LogEvent::info(format!(
+            "exit monitor: {} → {} (pnl={:.1}% peak={:.1}% dte={} days_held={})",
+            ap.symbol, exit_reason, pnl_pct, peak_pnl, dte, days_held,
+        )));
 
         // ── PDT gate ──────────────────────────────────────────────────────────
         let pdt_check = {

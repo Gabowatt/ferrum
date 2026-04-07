@@ -81,9 +81,11 @@ Let the bot run with revised scoring and observe:
 - P&L distribution when positions are entered
 
 ### Priority 2 — dynamic / staged profit exits
-Design TBD after real P&L data — revisit once positions have been entered:
-- Trailing profit target (once P&L > +30%, trail peak by 15%)
-- Staged closes for qty > 1 (50% at first target, remainder trails)
+- [x] Trailing profit target implemented: activate at +15%, trail gap 7%
+  - Example: peak=35% → close trigger at 28% | peak=60% → trigger at 53%
+  - Config: trailing_activation_pct=15.0, trailing_trail_gap_pct=7.0
+  - peak_pnl_pct tracked per position in OpenPositionMeta, updated each exit cycle
+- [ ] Staged closes for qty > 1 (50% at first target, remainder trails) — future
 
 ### Priority 3 — sector concentration tracking
 `RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
