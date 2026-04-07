@@ -155,10 +155,10 @@ The system operates in one of three modes based on regime detection:
 
 | Regime | Detection | Strategy | Direction |
 |--------|-----------|----------|-----------|
-| **Trending Up** | Price > EMA20 > EMA50, ADX > 25 | Buy calls on pullbacks to EMA20 | Long calls |
-| **Trending Down** | Price < EMA20 < EMA50, ADX > 25 | Buy puts on rallies to EMA20 | Long puts |
-| **Range-Bound** | ADX < 20, price oscillating in BBands | Buy at band extremes, direction of reversion | Calls at lower band, puts at upper band |
-| **Choppy/Unclear** | ADX 20–25, conflicting signals | **NO TRADE** — sit on hands | Cash |
+| **Trending Up** | Price > EMA20 > EMA50, ADX > 22 | Buy calls on pullbacks to EMA20 | Long calls |
+| **Trending Down** | Price < EMA20 < EMA50, ADX > 22 | Buy puts on rallies to EMA20 | Long puts |
+| **Range-Bound** | ADX < 17, price oscillating in BBands | Buy at band extremes, direction of reversion | Calls at lower band, puts at upper band |
+| **Choppy** | ADX 17–22, conflicting signals | Treat as Range-Bound — iron condors thrive in oscillating markets | Calls near lower band, puts near upper band |
 
 ---
 
@@ -200,9 +200,9 @@ if close < ema20 && ema20 < ema50 { regime = TrendingDown }
 
 #### 4. ADX (14-period) — Average Directional Index
 
-- **ADX > 25:** Strong trend exists (enable trending strategy)
-- **ADX < 20:** No trend (enable mean-reversion strategy)
-- **ADX 20–25:** Transitional zone (reduce position size by 50% or skip)
+- **ADX > 22:** Strong trend exists (enable trending strategy; threshold lowered from 25)
+- **ADX < 17:** No trend (enable mean-reversion strategy; threshold lowered from 20)
+- **ADX 17–22:** Choppy zone — treated as Range-Bound for iron condor purposes
 - **+DI / -DI:** Confirms trend direction alongside EMAs
 
 #### 5. Bollinger Bands (20-period, 2 std dev)
@@ -246,33 +246,35 @@ if close < ema20 && ema20 < ema50 { regime = TrendingDown }
 
 Each indicator generates a score. Entry requires a **minimum confluence score** to proceed.
 
-| Signal | Points | Condition (for CALL entry) |
-|--------|--------|---------------------------|
-| EMA Regime | +3 | Price > EMA20 > EMA50 (trending up) |
-| EMA Pullback | +2 | Price pulled back to within 0.5% of EMA9 or EMA20 |
-| RSI Zone | +2 | RSI between 35–50 (oversold bounce zone in uptrend) |
-| RSI Divergence | +3 | Bullish divergence detected (higher signal quality) |
-| MACD Crossover | +2 | MACD line crossed above signal within last 2 bars |
-| MACD Histogram | +1 | Histogram positive and growing |
-| ADX Strength | +2 | ADX > 25 (confirms trend exists) |
-| BBand Position | +2 | Price near lower Bollinger Band (mean-reversion setup) |
-| Volume Confirm | +1 | Volume ≥ 1.0× 20-day average |
-| VWAP Position | +1 | Price above VWAP (bullish intraday bias) |
-| IV Rank Filter | +2 | IV rank between 20–50 (options fairly priced) |
+| Signal | Points | Condition (for CALL entry) | Notes |
+|--------|--------|---------------------------|-------|
+| EMA Regime | +3 | Price > EMA20 > EMA50 (stacked bullish) | 0 pts in Choppy/RangeBound — that's expected |
+| EMA Proximity | +2 | Price within **1.5%** of EMA9 or EMA20 | Widened from 0.5% — captures realistic pullbacks |
+| RSI Zone | +2 | RSI between **30–55** (bounce / early uptrend) | Widened from 35–50 |
+| MACD Crossover | +2 | MACD line above signal line | |
+| MACD Histogram | +1 | Histogram positive | |
+| ADX Momentum | +2 | ADX ≥ **20** (any directional momentum) | Lowered from 25 — fires in choppy/transitional markets |
+| BBand Extreme | +2 | Price within **2%** of lower Bollinger Band | Widened from 1% |
+| Volume Confirm | +1 | Volume ≥ 1.0× 20-day average | |
 
-**Minimum score for entry: 8 points** (out of theoretical max ~21)
+**Maximum score: 15 points**
+**Minimum score for entry: 6 points** (40% of max — at least 3–4 signals must agree)
 
-For PUT entries, the conditions are mirrored (EMA bearish, RSI overbought zone, etc.)
+For PUT entries, conditions are mirrored: EMA bearish, RSI 45–70, MACD below signal, price near upper band.
+
+**Choppy regime:** Previously blocked all trades. Now treated identically to Range-Bound. Iron condors
+work well in oscillating, mean-reverting markets. In choppy conditions EMA regime (+3) won't fire, so
+the effective ceiling is ~12 pts. A score of 6 still requires BBand extreme + MACD + ADX + volume to
+agree — a conservative but realistic setup for a choppy underlying.
 
 ### Entry Procedure
 
 ```
 1. Scan underlying bars → compute all indicators
-2. Determine regime (trending/range/choppy)
-3. If regime == Choppy → SKIP, no trade
-4. Score all signals for the appropriate direction
-5. If score < 8 → SKIP
-6. If score >= 8 → proceed to contract selection
+2. Determine regime (trending/range-bound/choppy)
+3. Score all signals — Choppy uses BBand proximity for direction
+4. If score < 6 → SKIP (logged to scan_results DB table with outcome=below_threshold)
+5. If score >= 6 → proceed to contract selection
 7. Fetch options chain from Alpaca
 8. Filter contracts by:
    a. Direction: calls (bullish) or puts (bearish)

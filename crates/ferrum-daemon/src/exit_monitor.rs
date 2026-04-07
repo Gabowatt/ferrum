@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::info;
 use serde::Deserialize;
 use chrono::Utc;
 

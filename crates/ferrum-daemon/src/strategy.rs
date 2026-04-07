@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::error;
 use serde::Deserialize;
 use chrono::{Datelike, Timelike, Utc};
 
@@ -424,7 +424,9 @@ impl Strategy for IronConduitStrategy {
                 };
 
             if closes.len() < 60 {
-                info!("[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len());
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len(),
+                )));
                 continue;
             }
 
@@ -434,11 +436,18 @@ impl Strategy for IronConduitStrategy {
                 rc.adx_trend_threshold, rc.adx_no_trend_threshold,
             ) {
                 Some(s) => s,
-                None => { info!("[iron-conduit] {symbol}: snapshot failed"); continue; }
+                None => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!(
+                        "[iron-conduit] {symbol}: snapshot failed",
+                    )));
+                    continue;
+                }
             };
 
-            info!("[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1}",
-                snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx);
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1}",
+                snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx,
+            )));
 
             // Confluence gate
             let (score, direction) = match indicators::confluence_score(
@@ -446,15 +455,34 @@ impl Strategy for IronConduitStrategy {
             ) {
                 Some(s) => s,
                 None => {
-                    info!("[iron-conduit] {symbol}: choppy regime — skipping");
+                    // Should not reach here (Choppy now scores instead of returning None),
+                    // but guard just in case.
+                    let _ = state.db.insert_scan_result(
+                        symbol, &snap.regime.to_string(), 0, None, "choppy",
+                    ).await;
                     continue;
                 }
             };
 
-            info!("[iron-conduit] {symbol}: confluence score={score} direction={direction:?}");
+            let dir_str = match direction {
+                TradeDirection::Call => "call",
+                TradeDirection::Put  => "put",
+            };
+
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "[iron-conduit] {symbol}: score={score}/15 dir={dir_str} regime={}",
+                snap.regime,
+            )));
 
             if score < entry.min_confluence_score {
-                info!("[iron-conduit] {symbol}: score {score} < min {}", entry.min_confluence_score);
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: score {score} < min {} — skip",
+                    entry.min_confluence_score,
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "below_threshold",
+                ).await;
                 continue;
             }
 
@@ -502,7 +530,13 @@ impl Strategy for IronConduitStrategy {
                 .collect();
 
             if filtered_contracts.is_empty() {
-                info!("[iron-conduit] {symbol}: no contracts passed DTE/OI filter");
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter",
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "no_contracts",
+                ).await;
                 continue;
             }
 
@@ -571,8 +605,10 @@ impl Strategy for IronConduitStrategy {
                 }
 
                 if !iv_engine.is_buyable(iv_result.iv_rank) {
-                    info!("[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
-                        iv_result.iv_rank);
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
+                        iv_result.iv_rank,
+                    )));
                     continue;
                 }
 
@@ -602,11 +638,14 @@ impl Strategy for IronConduitStrategy {
                     TradeDirection::Call | TradeDirection::Put => LegAction::Buy,
                 };
 
-                info!(
-                    "[iron-conduit] SIGNAL {symbol} {contract} \
-                     dir={direction:?} mid=${mid:.2} score={score} \
-                     delta_dist={delta_score:.3} oi={oi:.0} qty={qty}"
-                );
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] SIGNAL {symbol} {contract} dir={dir_str} \
+                     mid=${mid:.2} score={score}/15 delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "entered",
+                ).await;
 
                 signals.push(Signal::EnterLong {
                     symbol: symbol.to_string(),
@@ -618,6 +657,11 @@ impl Strategy for IronConduitStrategy {
                         limit_price: Some(*mid),
                     }],
                 });
+            } else {
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "no_contracts",
+                ).await;
             }
         }
 

@@ -321,53 +321,71 @@ pub enum TradeDirection {
 }
 
 /// Compute confluence score and return (score, direction).
-/// Returns None if regime is Choppy (no trade).
+///
+/// Scoring rationale (max 15 pts):
+///   EMA regime alignment    +3  — price above/below stacked EMAs
+///   EMA proximity           +2  — within 1.5% of EMA9 or EMA20 (pullback/bounce zone)
+///   RSI zone                +2  — calls 30–55, puts 45–70 (wider to survive volatile regimes)
+///   MACD cross              +2  — macd vs signal line direction
+///   MACD histogram          +1  — histogram sign confirmation
+///   ADX momentum            +2  — ADX > 20 (reduced from 25; any meaningful trend qualifies)
+///   BBand extreme           +2  — within 2% of upper/lower band
+///   Volume confirmation     +1  — current bar volume ≥ 20-day average
+///
+/// Choppy regime: iron condors work well in range-bound/choppy markets, so
+/// Choppy is treated identically to RangeBound (BBand position picks direction).
+/// Only an unusually low score (< min_confluence_score) blocks entry.
 pub fn confluence_score(snap: &IndicatorSnapshot, _rsi_ob: f64, _rsi_os: f64) -> Option<(u32, TradeDirection)> {
     let direction = match snap.regime {
         Regime::TrendingUp   => TradeDirection::Call,
         Regime::TrendingDown => TradeDirection::Put,
-        Regime::RangeBound   => {
-            // At lower band → call, at upper band → put
+        // Range-bound and choppy: pick direction from BBand proximity.
+        // Iron condors thrive when price oscillates inside a band.
+        Regime::RangeBound | Regime::Choppy => {
             let dist_lower = (snap.close - snap.bbands.lower).abs();
             let dist_upper = (snap.close - snap.bbands.upper).abs();
             if dist_lower < dist_upper { TradeDirection::Call } else { TradeDirection::Put }
         }
-        Regime::Choppy => return None,
     };
 
     let mut score: u32 = 0;
 
     match direction {
         TradeDirection::Call => {
-            // EMA regime
+            // EMA regime alignment (stacked bullish)
             if snap.close > snap.ema20 && snap.ema20 > snap.ema50 { score += 3; }
-            // Pullback to EMA9 or EMA20
-            if (snap.close - snap.ema9).abs() / snap.close < 0.005
-            || (snap.close - snap.ema20).abs() / snap.close < 0.005 { score += 2; }
-            // RSI oversold bounce zone (35–50 in uptrend)
-            if snap.rsi >= 35.0 && snap.rsi <= 50.0 { score += 2; }
+            // Pullback / proximity to EMA9 or EMA20 (1.5% tolerance)
+            if (snap.close - snap.ema9).abs() / snap.close < 0.015
+            || (snap.close - snap.ema20).abs() / snap.close < 0.015 { score += 2; }
+            // RSI oversold-to-neutral zone (30–55 covers bounce + early uptrend)
+            if snap.rsi >= 30.0 && snap.rsi <= 55.0 { score += 2; }
             // MACD crossover bullish
             if snap.macd.macd > snap.macd.signal { score += 2; }
             if snap.macd.histogram > 0.0 { score += 1; }
-            // ADX strong trend
-            if snap.adx.adx > 25.0 { score += 2; }
-            // BBand lower
-            if snap.close <= snap.bbands.lower * 1.01 { score += 2; }
-            // VWAP-like: skip (not available in daily bars), award 0
+            // ADX momentum present (any directional move ≥ 20)
+            if snap.adx.adx >= 20.0 { score += 2; }
+            // Price near lower BBand (≤ 2% above lower band)
+            if snap.close <= snap.bbands.lower * 1.02 { score += 2; }
         }
         TradeDirection::Put => {
+            // EMA regime alignment (stacked bearish)
             if snap.close < snap.ema20 && snap.ema20 < snap.ema50 { score += 3; }
-            if (snap.close - snap.ema9).abs() / snap.close < 0.005
-            || (snap.close - snap.ema20).abs() / snap.close < 0.005 { score += 2; }
-            if snap.rsi >= 50.0 && snap.rsi <= 65.0 { score += 2; }
+            // Pullback / proximity to EMA9 or EMA20 (1.5% tolerance)
+            if (snap.close - snap.ema9).abs() / snap.close < 0.015
+            || (snap.close - snap.ema20).abs() / snap.close < 0.015 { score += 2; }
+            // RSI overbought-to-neutral zone (45–70 covers rollover + early downtrend)
+            if snap.rsi >= 45.0 && snap.rsi <= 70.0 { score += 2; }
+            // MACD crossover bearish
             if snap.macd.macd < snap.macd.signal { score += 2; }
             if snap.macd.histogram < 0.0 { score += 1; }
-            if snap.adx.adx > 25.0 { score += 2; }
-            if snap.close >= snap.bbands.upper * 0.99 { score += 2; }
+            // ADX momentum present
+            if snap.adx.adx >= 20.0 { score += 2; }
+            // Price near upper BBand (≥ 2% below upper band)
+            if snap.close >= snap.bbands.upper * 0.98 { score += 2; }
         }
     }
 
-    // Volume confirmation
+    // Volume confirmation: current bar ≥ 20-day average
     if !snap.vol_ratio.is_nan() && snap.vol_ratio >= 1.0 { score += 1; }
 
     Some((score, direction))

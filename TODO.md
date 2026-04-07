@@ -59,13 +59,26 @@
 - [x] Expanded tier2 symbol universe (+10 names); trimmed 5 dead/illiquid tickers (PARA, WBA, X, NOK, GOLD)
 - [ ] Single-terminal daemon launch from TUI — deferred, needs more thought
 
+## Completed this session (paper trading day 2 — 2026-04-06)
+
+- [x] Revised confluence scoring — widened all signal thresholds using quant methodology:
+  - EMA proximity: 0.5% → 1.5% tolerance (realistic pullback depth)
+  - RSI call zone: 35–50 → 30–55; put zone: 50–65 → 45–70
+  - ADX score threshold: >25 → ≥20 (fires in choppy/transitional markets)
+  - BBand extreme: 1% → 2% tolerance
+  - Choppy regime: was blocking all trades → now scores as RangeBound (iron condors thrive in choppy markets)
+- [x] Updated config.toml: adx_trend_threshold 25→22, adx_no_trend_threshold 20→17, min_confluence_score 8→6
+- [x] Added `scan_results` DB table — every scored symbol logged with regime/score/direction/outcome
+- [x] strategy.rs: replaced all `info!()` with `log_tx.send()` so scores are visible in TUI and DB
+- [x] Updated strategy doc (Section 3 regime table, Section 5 scoring table + entry procedure)
+
 ## Next session — resume here
 
 ### Priority 1 — watch paper trading data
-Let the bot run for a few days and observe:
-- Which symbols consistently score highest (approaching 8)
-- Whether options chain fetches succeed (free tier may gate /v2/snapshots/options)
-- P&L distribution when first positions are entered
+Let the bot run with revised scoring and observe:
+- Which symbols score ≥ 6 (query `scan_results` table)
+- Which outcome buckets dominate: below_threshold / no_contracts / entered
+- P&L distribution when positions are entered
 
 ### Priority 2 — dynamic / staged profit exits
 Design TBD after real P&L data — revisit once positions have been entered:
