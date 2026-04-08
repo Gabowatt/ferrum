@@ -72,20 +72,26 @@
 - [x] strategy.rs: replaced all `info!()` with `log_tx.send()` so scores are visible in TUI and DB
 - [x] Updated strategy doc (Section 3 regime table, Section 5 scoring table + entry procedure)
 
-## Next session — resume here
+## Completed this session (paper trading day 3 — 2026-04-08)
 
-### Priority 1 — watch paper trading data
-Let the bot run with revised scoring and observe:
-- Which symbols score ≥ 6 (query `scan_results` table)
-- Which outcome buckets dominate: below_threshold / no_contracts / entered
-- P&L distribution when positions are entered
+- [x] Fixed TUI PnL panel: was showing 1M cumulative as "today", month/year hardcoded 0.0
+  - today = equity[-1] - equity[-2] from 1M daily history
+  - month = profit_loss[-1] from 1M query (cumulative)
+  - year  = profit_loss[-1] from 1A query (best-effort, falls back to 0)
+- [x] Removed [E] export keybinding from TUI (keybindings bar + help overlay)
 
-### Priority 2 — dynamic / staged profit exits
-- [x] Trailing profit target implemented: activate at +15%, trail gap 7%
-  - Example: peak=35% → close trigger at 28% | peak=60% → trigger at 53%
-  - Config: trailing_activation_pct=15.0, trailing_trail_gap_pct=7.0
-  - peak_pnl_pct tracked per position in OpenPositionMeta, updated each exit cycle
-- [ ] Staged closes for qty > 1 (50% at first target, remainder trails) — future
+## Next session — resume here (Friday 2026-04-11)
+
+### Priority 1 — PDT review
+2 day trades were used on day 1 (max is 2 per 5-day window). Review after Friday's run:
+- Query day_trades table to see what triggered them
+- Tighten or block same-day exits that aren't true emergencies
+- Consider raising emergency_stop_pct threshold to reduce day-trade triggers
+
+### Priority 2 — watch paper trading data
+- Query scan_results: which symbols consistently score ≥ 6
+- Which outcome dominates: below_threshold / no_contracts / entered
+- Check if rate limits are still an issue (Alpaca Plus upgrade in progress)
 
 ### Priority 3 — sector concentration tracking
 `RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
@@ -93,7 +99,6 @@ Let the bot run with revised scoring and observe:
 - Block entry if open positions in same sector >= max_sector_positions
 
 ### Priority 4 — TUI polish (when ready)
-- `[E]` export keybinding → write CSV to `~/ferrum-export-YYYY.csv`
 - `[P]` privacy toggle — hide PnL values (show `****`)
 - `[B]` buying power panel — free cash + used margin
 

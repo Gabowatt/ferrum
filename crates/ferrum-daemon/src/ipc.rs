@@ -216,19 +216,50 @@ async fn fetch_positions(state: &AppState) -> Result<Vec<Position>, ferrum_core:
 
 async fn fetch_pnl(
     client: &ferrum_core::client::AlpacaClient,
-    period: &str,
+    _period: &str,
 ) -> Result<IpcResponse, ferrum_core::error::FerrumError> {
-    let data: serde_json::Value = client
-        .get_with_query("/v2/account/portfolio/history", &[("period", period), ("timeframe", "1D")])
+    // One month of daily history: equity[-1] - equity[-2] = today, profit_loss[-1] = month total.
+    let month_data: serde_json::Value = client
+        .get_with_query("/v2/account/portfolio/history", &[("period", "1M"), ("timeframe", "1D")])
         .await?;
 
-    let profit_loss = data["profit_loss"].as_array().and_then(|v| v.last()).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let equity_arr = month_data["equity"].as_array();
+    let pl_arr     = month_data["profit_loss"].as_array();
 
-    Ok(IpcResponse::Pnl {
-        today: profit_loss,
-        month: 0.0, // TODO: derive from history array
-        year:  0.0,
-    })
+    // Today = last day's equity minus previous day's equity.
+    let today = equity_arr.and_then(|arr| {
+        let n = arr.len();
+        if n >= 2 {
+            let last = arr[n - 1].as_f64()?;
+            let prev = arr[n - 2].as_f64()?;
+            Some(last - prev)
+        } else {
+            None
+        }
+    }).unwrap_or(0.0);
+
+    // Month = cumulative profit_loss since start of the 1M window.
+    let month = pl_arr
+        .and_then(|arr| arr.last())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // Year = cumulative profit_loss over 1A window (best-effort, falls back to 0).
+    let year = match client
+        .get_with_query::<serde_json::Value>(
+            "/v2/account/portfolio/history",
+            &[("period", "1A"), ("timeframe", "1D")],
+        )
+        .await
+    {
+        Ok(year_data) => year_data["profit_loss"].as_array()
+            .and_then(|arr| arr.last())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        Err(_) => 0.0,
+    };
+
+    Ok(IpcResponse::Pnl { today, month, year })
 }
 
 // ── Market clock helper ────────────────────────────────────────────────────────

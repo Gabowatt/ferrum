@@ -271,11 +271,10 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
 fn draw_keybindings(f: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         Span::raw(" "),
-        Span::styled("[S]", Style::default().fg(GREEN)),  Span::styled(" Start  ", dim()),
-        Span::styled("[X]", Style::default().fg(RED)),    Span::styled(" Stop  ", dim()),
-        Span::styled("[E]", Style::default().fg(YELLOW)), Span::styled(" Export  ", dim()),
-        Span::styled("[Q]", dim()),                       Span::styled(" Quit  ", dim()),
-        Span::styled("[?]", dim()),                       Span::styled(" Help", dim()),
+        Span::styled("[S]", Style::default().fg(GREEN)), Span::styled(" Start  ", dim()),
+        Span::styled("[X]", Style::default().fg(RED)),   Span::styled(" Stop  ", dim()),
+        Span::styled("[Q]", dim()),                      Span::styled(" Quit  ", dim()),
+        Span::styled("[?]", dim()),                      Span::styled(" Help", dim()),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -291,8 +290,6 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("  [S]          Start strategy loop",              Style::default().fg(FG))),
         Line::from(Span::styled("  [X]          Stop strategy loop",               Style::default().fg(FG))),
-        Line::from(Span::styled("  [D]          Launch / kill daemon process",     Style::default().fg(FG))),
-        Line::from(Span::styled("  [E]          Export fills to CSV",              Style::default().fg(FG))),
         Line::from(Span::styled("  [Q]          Quit TUI (daemon keeps running)",  Style::default().fg(FG))),
         Line::from(Span::styled("  [↑] [↓]      Scroll bot log",                  Style::default().fg(FG))),
         Line::from(Span::styled("  [End] [F]    Return to tail-follow",            Style::default().fg(FG))),
