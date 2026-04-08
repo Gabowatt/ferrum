@@ -26,6 +26,7 @@ pub struct App {
     pub log_scroll:  usize,
     pub tail_follow: bool,
     pub show_help:   bool,
+    pub pnl_hidden:  bool,
 }
 
 impl App {
@@ -48,6 +49,7 @@ impl App {
             log_scroll:      0,
             tail_follow:     true,
             show_help:       false,
+            pnl_hidden:      false,
         }
     }
 

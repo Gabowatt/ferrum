@@ -129,6 +129,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     (KeyCode::Char('?'), _) => {
                         app.show_help = !app.show_help;
                     }
+                    (KeyCode::Char('h'), _) | (KeyCode::Char('H'), _) => {
+                        app.pnl_hidden = !app.pnl_hidden;
+                    }
                     (KeyCode::Up, _) => {
                         app.log_scroll  = app.log_scroll.saturating_sub(1);
                         app.tail_follow = false;

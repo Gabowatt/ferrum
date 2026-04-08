@@ -84,7 +84,7 @@
 
 ### Priority 1 — PDT review
 2 day trades were used on day 1 (max is 2 per 5-day window). Review after Friday's run:
-- Query day_trades table to see what triggered them
+- Query: `SELECT contract_symbol, open_time, close_time, pnl, was_emergency FROM day_trades ORDER BY close_time DESC;`
 - Tighten or block same-day exits that aren't true emergencies
 - Consider raising emergency_stop_pct threshold to reduce day-trade triggers
 

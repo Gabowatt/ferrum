@@ -183,32 +183,49 @@ fn draw_positions_pnl(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 &pos.contract
             };
+            let (pnl_pct_str, pnl_usd_str, pnl_col) = if app.pnl_hidden {
+                ("  ****".to_string(), "".to_string(), MID)
+            } else {
+                (format!("{:+.1}%", pnl_pct), format!(" ({:+.0})", pos.unrealized_pl), pnl_color(pnl_pct))
+            };
             ListItem::new(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(format!("{:<18}", contract_short), Style::default().fg(dir_color)),
                 Span::styled(format!(" x{:.0}  @{:.2}  ", pos.qty, pos.entry_price), normal()),
-                Span::styled(format!("{:+.1}%", pnl_pct), Style::default().fg(pnl_color(pnl_pct))),
-                Span::styled(format!(" ({:+.0})", pos.unrealized_pl), Style::default().fg(pnl_color(pnl_pct))),
+                Span::styled(pnl_pct_str, Style::default().fg(pnl_col)),
+                Span::styled(pnl_usd_str, Style::default().fg(pnl_col)),
             ]))
         }).collect();
         f.render_widget(List::new(items).block(pos_block), cols[0]);
     }
 
+    let mask = app.pnl_hidden;
+    let pnl_val = |v: f64| -> (String, Color) {
+        if mask { ("  ****".to_string(), MID) } else { (format!("{:+.2}", v), pnl_color(v)) }
+    };
+    let (today_str, today_col) = pnl_val(app.pnl_today);
+    let (month_str, month_col) = pnl_val(app.pnl_month);
+    let (year_str,  year_col)  = pnl_val(app.pnl_year);
+    let pnl_hint  = if mask { " PnL [H] show " } else { " PnL [H] hide " };
+    let pnl_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(dim())
+        .title(Span::styled(pnl_hint, Style::default().fg(BLUE)));
     let pnl_lines = vec![
         Line::from(vec![
             Span::styled("  Today  ", dim()),
-            Span::styled(format!("{:+.2}", app.pnl_today), Style::default().fg(pnl_color(app.pnl_today))),
+            Span::styled(today_str, Style::default().fg(today_col)),
         ]),
         Line::from(vec![
             Span::styled("  Month  ", dim()),
-            Span::styled(format!("{:+.2}", app.pnl_month), Style::default().fg(pnl_color(app.pnl_month))),
+            Span::styled(month_str, Style::default().fg(month_col)),
         ]),
         Line::from(vec![
             Span::styled("  Year   ", dim()),
-            Span::styled(format!("{:+.2}", app.pnl_year), Style::default().fg(pnl_color(app.pnl_year))),
+            Span::styled(year_str, Style::default().fg(year_col)),
         ]),
     ];
-    f.render_widget(Paragraph::new(pnl_lines).block(bordered("PnL")), cols[1]);
+    f.render_widget(Paragraph::new(pnl_lines).block(pnl_block), cols[1]);
 }
 
 // ── Recent fills ──────────────────────────────────────────────────────────────
@@ -271,10 +288,11 @@ fn draw_log(f: &mut Frame, area: Rect, app: &App) {
 fn draw_keybindings(f: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         Span::raw(" "),
-        Span::styled("[S]", Style::default().fg(GREEN)), Span::styled(" Start  ", dim()),
-        Span::styled("[X]", Style::default().fg(RED)),   Span::styled(" Stop  ", dim()),
-        Span::styled("[Q]", dim()),                      Span::styled(" Quit  ", dim()),
-        Span::styled("[?]", dim()),                      Span::styled(" Help", dim()),
+        Span::styled("[S]", Style::default().fg(GREEN)),  Span::styled(" Start  ", dim()),
+        Span::styled("[X]", Style::default().fg(RED)),    Span::styled(" Stop  ", dim()),
+        Span::styled("[H]", Style::default().fg(PURPLE)), Span::styled(" Hide PnL  ", dim()),
+        Span::styled("[Q]", dim()),                       Span::styled(" Quit  ", dim()),
+        Span::styled("[?]", dim()),                       Span::styled(" Help", dim()),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -290,7 +308,8 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("  [S]          Start strategy loop",              Style::default().fg(FG))),
         Line::from(Span::styled("  [X]          Stop strategy loop",               Style::default().fg(FG))),
-        Line::from(Span::styled("  [Q]          Quit TUI (daemon keeps running)",  Style::default().fg(FG))),
+        Line::from(Span::styled("  [H]          Toggle PnL privacy (hide/show values)", Style::default().fg(FG))),
+        Line::from(Span::styled("  [Q]          Quit TUI (daemon keeps running)",       Style::default().fg(FG))),
         Line::from(Span::styled("  [↑] [↓]      Scroll bot log",                  Style::default().fg(FG))),
         Line::from(Span::styled("  [End] [F]    Return to tail-follow",            Style::default().fg(FG))),
         Line::from(Span::styled("  [?]          Toggle this overlay",              Style::default().fg(FG))),
