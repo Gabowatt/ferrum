@@ -82,11 +82,17 @@
 
 ## Next session — resume here (Friday 2026-04-11)
 
-### Priority 1 — PDT review
-2 day trades were used on day 1 (max is 2 per 5-day window). Review after Friday's run:
-- Query: `SELECT contract_symbol, open_time, close_time, pnl, was_emergency FROM day_trades ORDER BY close_time DESC;`
-- Tighten or block same-day exits that aren't true emergencies
-- Consider raising emergency_stop_pct threshold to reduce day-trade triggers
+### Priority 1 — Bug fixes from week 1 report (address before next trading week)
+- [ ] EMA50 break exit fires at midnight on stale prices — gate exit submissions to market hours only
+- [ ] PDT day-trade counter may reset on daemon restart — verify count survives restarts (persist to DB on boot)
+- [ ] Add minimum hold time (1 trading day) before stop-loss arms — NIO was stopped out in 5 minutes
+- [ ] Remove AMZN, AMD, MARA, INTC from symbol universe — avg score 3.0–3.7, never generate entries
+
+### Priority 2 — Post-Alpaca Plus (once upgrade completes)
+- [ ] Drop TUI polling intervals back to real-time (pnl: 30s, positions: 10s)
+- [ ] Set market_data_cooldown = 0 in config.toml
+- [ ] Re-evaluate min_confluence_score (currently 6) — may raise to 7 with better chain data
+- [ ] Investigate SPY/QQQ/IWM/F/BAC chain data gaps (currently no_contracts on free feed)
 
 ### Priority 2 — watch paper trading data
 - Query scan_results: which symbols consistently score ≥ 6
