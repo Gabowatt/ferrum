@@ -92,7 +92,7 @@
 - [x] Week 2 tuning: removed AMZN, AMD, MARA, INTC, VALE from symbol universe (avg score 3.0–3.7)
 - [x] PDT bug (false alarm): PDT correctly blocked at limit; NIO was allowed through as emergency stop (-54% > 50% threshold)
 
-## Completed this session (v2.1 strategy implementation — 2026-04-07)
+## Completed this session (v2.1 strategy implementation + cleanup — 2026-04-11)
 
 - [x] Added v2.1 EntryConfig fields: trend_min_score, range_min_score, choppy_min_score, allow_choppy,
       extreme_proximity_atr, cooldown_after_close_hours, bb_width_min_pct, ema_slope_lookback_bars
@@ -106,6 +106,8 @@
 - [x] Regime-specific sizing: trend 7-8=0.5×, 9-10=0.75×, 11-12=1.0×; range 6=0.5×, 7-8=0.75×, 9-10=1.0×
 - [x] AppState: added last_close_by_underlying for cooldown tracking
 - [x] order_poller.rs: records close timestamp on confirmed fill
+- [x] Removed old ferrum-iron-conduit-strategy.md (v2.0); renamed _v2.md → ferrum-iron-conduit-strategy.md (v2.1 is now canonical)
+- [x] Updated README with v2.1 strategy summary: three-stage gate, regime table, entry thresholds, exit priority table
 
 ## Next session — resume here
 

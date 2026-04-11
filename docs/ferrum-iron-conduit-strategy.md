@@ -1,11 +1,29 @@
 # Ferrum Trading Strategy: Iron Conduit
 
-> **Version:** 2.0  
+> **Version:** 2.1  
 > **Codename:** `iron-conduit`  
 > **Account Size:** $1,000  
 > **Account Type:** Cash (avoids margin requirements, simplifies PDT handling)  
 > **Platform:** Alpaca Trading API (paper → live via Algo Trader Plus)  
 > **Asset Class:** US equity & ETF options (American-style)
+
+## Changelog
+
+### v2.1 (post Week 1 paper trading review)
+Week 1 surfaced three structural problems that the v2.0 confluence design didn't anticipate:
+
+1. **Score compression.** Many symbols posted flat scores (CLF, BAC, SPY, QQQ all averaged exactly 6.0 across ~150 scans). A score that never moves isn't ranking anything — it's a constant. The original additive scoring let weak signals stack up to a passing total without any single signal being strong.
+2. **Choppy regime dominated (69% of scans).** The original strategy explicitly forbade trading in choppy regime, then the live config allowed it as a workaround for getting any fills. Iron condors / mean-reversion *can* work in choppy markets, but the entry signals used were trend-following signals applied to a non-trending tape. CLF and NIO were stopped out within minutes because there was no trend to ride.
+3. **Entries had no minimum hold protection.** A position that goes underwater in 5 minutes is almost certainly noise, not a thesis violation. Stop-losses fired before the trade had any chance.
+
+This revision rebuilds the confluence system around three principles: **multiplicative gating** (one veto kills the trade), **regime-specific signal sets** (trend signals for trends, mean-reversion signals for ranges), and **entry quality filtering** (minimum hold time, fresh-bar gating, no entries within 1 ATR of recent extremes against you).
+
+The intent is fewer entries, higher quality, scores that actually vary across symbols, and an honest answer to "what do we do in choppy markets?" (Answer: a *real* mean-reversion sub-strategy with tighter risk, or stand aside.)
+
+Sections rewritten: §3 (Strategy Overview), §5 (Entry Logic — full rewrite), §6 (Exit Logic — minimum hold + market hours gating), §7 (Sizing — score-tier recalibration), §13 (Config Reference). New §5a (Regime-Specific Signal Sets). All other sections unchanged from v2.0.
+
+### v2.0
+Initial release.
 
 ---
 
@@ -151,14 +169,24 @@ This is NOT a directional gambling strategy. This is a **probability-weighted, m
 
 ### Strategy Modes
 
-The system operates in one of three modes based on regime detection:
+The system operates in one of four modes. **Each mode has its own signal set** (see §5a) — we do not apply trend signals to non-trending markets, which was the core mistake of v2.0.
 
-| Regime | Detection | Strategy | Direction |
-|--------|-----------|----------|-----------|
-| **Trending Up** | Price > EMA20 > EMA50, ADX > 22 | Buy calls on pullbacks to EMA20 | Long calls |
-| **Trending Down** | Price < EMA20 < EMA50, ADX > 22 | Buy puts on rallies to EMA20 | Long puts |
-| **Range-Bound** | ADX < 17, price oscillating in BBands | Buy at band extremes, direction of reversion | Calls at lower band, puts at upper band |
-| **Choppy** | ADX 17–22, conflicting signals | Treat as Range-Bound — iron condors thrive in oscillating markets | Calls near lower band, puts near upper band |
+| Regime | Detection | Sub-strategy | Signal set |
+|--------|-----------|--------------|------------|
+| **Trending Up** | Price > EMA20 > EMA50, ADX ≥ 22, +DI > -DI | Buy calls on EMA9/20 pullback | Trend-following |
+| **Trending Down** | Price < EMA20 < EMA50, ADX ≥ 22, -DI > +DI | Buy puts on EMA9/20 rally | Trend-following |
+| **Range-Bound** | ADX < 18, price within BBands, BBand width > 5% | Buy puts at upper band, calls at lower band | Mean-reversion |
+| **Choppy** | None of the above | **NO TRADE** unless `allow_choppy = true` AND a strong mean-reversion signal fires (BBand pierce + RSI extreme) | Restricted mean-reversion only, half size |
+
+**Key rule:** A regime must be *positively identified*, not assumed by elimination. If trend tests fail AND range-bound tests fail, the regime is choppy and the default action is no trade. The `allow_choppy` flag (default: false) lets you opt into a *strict* mean-reversion sub-strategy in choppy markets, but with reduced size and stricter exit rules. This is the honest version of what week 1 was doing implicitly.
+
+### Why score variance matters
+
+In week 1, CLF, BAC, SPY, QQQ, IWM all averaged exactly 6.0 across ~150 scans. That's a constant, not a score. It happens because additive scoring with many low-discrimination signals produces a baseline that everything passes. The v2.1 confluence system fixes this with:
+
+- **Veto gates:** A failing IV Rank or a stale-bar condition kills the trade outright. Scores can't compensate.
+- **Multiplicative regime gate:** Trend signals only score in trending regimes; range signals only score in range-bound regimes. A symbol in the wrong regime scores zero on the wrong indicator set, not 1 point of partial credit.
+- **Quality-weighted points:** Strong signals (RSI divergence at extreme, EMA pullback after a clean trend leg) score more; weak signals (ADX merely > threshold, volume merely "average") score less or are removed entirely.
 
 ---
 
@@ -200,9 +228,9 @@ if close < ema20 && ema20 < ema50 { regime = TrendingDown }
 
 #### 4. ADX (14-period) — Average Directional Index
 
-- **ADX > 22:** Strong trend exists (enable trending strategy; threshold lowered from 25)
-- **ADX < 17:** No trend (enable mean-reversion strategy; threshold lowered from 20)
-- **ADX 17–22:** Choppy zone — treated as Range-Bound for iron condor purposes
+- **ADX > 25:** Strong trend exists (enable trending strategy)
+- **ADX < 20:** No trend (enable mean-reversion strategy)
+- **ADX 20–25:** Transitional zone (reduce position size by 50% or skip)
 - **+DI / -DI:** Confirms trend direction alongside EMAs
 
 #### 5. Bollinger Bands (20-period, 2 std dev)
@@ -240,70 +268,217 @@ if close < ema20 && ema20 < ema50 { regime = TrendingDown }
 
 ---
 
-## 5. Entry Logic — The Confluence Gate
+## 5. Entry Logic — The Confluence Gate (v2.1 rewrite)
 
-### Signal Scoring System
+The week 1 data showed that an additive scoring system with many low-discrimination signals produces flat scores that don't actually rank anything. This rewrite changes the model from "add up points until you pass a threshold" to "pass every veto, then earn a quality score, then size accordingly."
 
-Each indicator generates a score. Entry requires a **minimum confluence score** to proceed.
+### The three-stage gate
 
-| Signal | Points | Condition (for CALL entry) | Notes |
-|--------|--------|---------------------------|-------|
-| EMA Regime | +3 | Price > EMA20 > EMA50 (stacked bullish) | 0 pts in Choppy/RangeBound — that's expected |
-| EMA Proximity | +2 | Price within **1.5%** of EMA9 or EMA20 | Widened from 0.5% — captures realistic pullbacks |
-| RSI Zone | +2 | RSI between **30–55** (bounce / early uptrend) | Widened from 35–50 |
-| MACD Crossover | +2 | MACD line above signal line | |
-| MACD Histogram | +1 | Histogram positive | |
-| ADX Momentum | +2 | ADX ≥ **20** (any directional momentum) | Lowered from 25 — fires in choppy/transitional markets |
-| BBand Extreme | +2 | Price within **2%** of lower Bollinger Band | Widened from 1% |
-| Volume Confirm | +1 | Volume ≥ 1.0× 20-day average | |
-
-**Maximum score: 15 points**
-**Minimum score for entry: 6 points** (40% of max — at least 3–4 signals must agree)
-
-For PUT entries, conditions are mirrored: EMA bearish, RSI 45–70, MACD below signal, price near upper band.
-
-**Choppy regime:** Previously blocked all trades. Now treated identically to Range-Bound. Iron condors
-work well in oscillating, mean-reverting markets. In choppy conditions EMA regime (+3) won't fire, so
-the effective ceiling is ~12 pts. A score of 6 still requires BBand extreme + MACD + ADX + volume to
-agree — a conservative but realistic setup for a choppy underlying.
-
-### Entry Procedure
+Every potential entry passes through three stages **in order**. Failing any stage at any point kills the trade — no compensation, no overrides.
 
 ```
-1. Scan underlying bars → compute all indicators
-2. Determine regime (trending/range-bound/choppy)
-3. Score all signals — Choppy uses BBand proximity for direction
-4. If score < 6 → SKIP (logged to scan_results DB table with outcome=below_threshold)
-5. If score >= 6 → proceed to contract selection
-7. Fetch options chain from Alpaca
-8. Filter contracts by:
-   a. Direction: calls (bullish) or puts (bearish)
-   b. Delta: 0.30–0.45 (sweet spot for directional with some safety)
-   c. DTE: 14–45 days (enough time for thesis to play out, avoid rapid theta burn)
-   d. Premium: ask_price * 100 <= max_position_usd
-   e. Liquidity: OI >= 100, volume >= 50, spread <= $0.20
-   f. IV Rank: 20–60 (avoid overpaying for premium)
-9. Rank qualifying contracts by:
-   a. Delta closest to 0.35 (preferred sweet spot)
-   b. Tightest bid-ask spread
-   c. Highest open interest
-10. Select top contract → submit limit order at mid-price
+   ┌────────────────────┐
+   │ STAGE 1: VETOES    │  ← any failure = no trade
+   │ (hard pass/fail)   │
+   └─────────┬──────────┘
+             │ all pass
+             ▼
+   ┌────────────────────┐
+   │ STAGE 2: REGIME    │  ← classifies which signal set to use
+   │ (must positively   │
+   │  identify regime)  │
+   └─────────┬──────────┘
+             │ regime ∈ {trend_up, trend_down, range}
+             ▼
+   ┌────────────────────┐
+   │ STAGE 3: SCORING   │  ← regime-specific signals only
+   │ (quality score for │
+   │  sizing)           │
+   └────────────────────┘
 ```
+
+### Stage 1: Vetoes (hard gates)
+
+These are pre-conditions, not "signals." If any of these fail, the trade is rejected silently — it does not contribute to the score, it ends the evaluation.
+
+| Veto | Condition | Why |
+|------|-----------|-----|
+| Stale bar | Latest bar timestamp > 90 min old during market hours | Prevents acting on dead data (week 1 had midnight EMA50 exits firing on stale prices) |
+| IV Rank too high | IV Rank > 60 | Overpaying for premium; even correct direction loses to IV crush |
+| IV Rank too low | IV Rank < 10 | Suspiciously low IV often = data gap, not opportunity |
+| Spread too wide | (ask - bid) / mid > 8% on the underlying's most-traded near-money strike | Illiquid = bad fills + bad exits |
+| No chain | Options chain returned empty or no contracts in 14–45 DTE band | Free-tier data gap; skip rather than guess |
+| Recent gap | Yesterday's close to today's open gapped > 2 ATR | Wait for the dust to settle; gaps create false signals |
+| Volume drought | 20-day average volume < 500k shares (underlying) | Thin underlying = thin options |
+| Too close to extreme | For calls: today's high is within 0.5 ATR of 20-day high<br>For puts: today's low is within 0.5 ATR of 20-day low | Buying at the local extreme is a high-probability stop-out (this is what killed the NIO trade in 5 minutes) |
+| Already exposed | We already hold a position in this underlying or correlated underlying | No doubling down |
+| Within minimum cooldown | We closed a position in this underlying within the last 4 hours | No revenge trades |
+
+A symbol that fails any of these doesn't appear in scoring at all. This alone should drop the scan-to-entry rate significantly compared to week 1.
+
+### Stage 2: Regime Classification
+
+The system must **positively identify** one of three actionable regimes. If none match, the regime is **choppy** and no trade fires (unless `allow_choppy = true`, in which case only the restricted mean-reversion path is available).
+
+```
+def classify_regime(bars):
+    ema9, ema20, ema50 = compute_emas(bars)
+    adx, plus_di, minus_di = compute_adx(bars, 14)
+    bb_upper, bb_mid, bb_lower = bollinger(bars, 20, 2.0)
+    bb_width_pct = (bb_upper - bb_lower) / bb_mid * 100
+    close = bars[-1].close
+
+    # Trend tests (must be POSITIVELY true)
+    is_trend_up = (
+        close > ema20 > ema50 and
+        adx >= 22 and
+        plus_di > minus_di and
+        ema20 > ema20_5_bars_ago  # EMA20 itself rising
+    )
+    is_trend_down = (
+        close < ema20 < ema50 and
+        adx >= 22 and
+        minus_di > plus_di and
+        ema20 < ema20_5_bars_ago
+    )
+
+    # Range test (must be POSITIVELY true)
+    is_range = (
+        adx < 18 and
+        bb_lower < close < bb_upper and
+        bb_width_pct >= 5.0 and  # band must be wide enough to mean-revert into
+        abs(close - ema50) / ema50 < 0.05  # price near the long-term mean
+    )
+
+    if is_trend_up:    return Regime.TrendUp
+    if is_trend_down:  return Regime.TrendDown
+    if is_range:       return Regime.RangeBound
+    return Regime.Choppy
+```
+
+Note that the trend and range tests **cannot both be true** (ADX ≥ 22 and ADX < 18 are disjoint). This is intentional — regime is unambiguous.
+
+### Stage 3: Quality Scoring (regime-specific)
+
+Each regime has its own signal set. Trend signals are **not** scored in range regimes, and vice versa. This is the fix for week 1's flat scores.
+
+#### Trend-Up (long calls) — max score 12
+
+| Signal | Points | Condition |
+|--------|--------|-----------|
+| Pullback to EMA9 | 3 | `low <= ema9 <= high` on current bar AND prior 2 bars closed above ema9 |
+| Pullback to EMA20 | 2 | `low <= ema20 <= high` on current bar (deeper pullback, slightly less ideal) |
+| RSI in buy zone | 2 | RSI(14) between 40 and 55 (pulled back but not broken) |
+| MACD histogram turning up | 2 | Histogram negative or near zero, but rising for 2 consecutive bars |
+| Higher low confirmation | 2 | Today's low > the low of 5 bars ago (structural higher low) |
+| Volume contraction on pullback | 1 | Today's volume < 0.9 × 20-day average (clean pullback, not distribution) |
+| ADX rising | 1 | ADX(14) today > ADX 3 bars ago (trend strengthening) |
+| RSI bullish divergence | +2 bonus | Lower price low + higher RSI low over last 10 bars |
+
+**Minimum score: 7/12.** Below 7, the setup isn't clean enough.
+
+Note: pullback to EMA9 and pullback to EMA20 are mutually exclusive — you score at most one of them. If price is between them, score the EMA9 row (closer = better).
+
+#### Trend-Down (long puts) — max score 12
+
+Mirror image of Trend-Up. Pullbacks become rallies, "higher low" becomes "lower high," RSI buy zone becomes 45–60.
+
+#### Range-Bound (mean-reversion) — max score 10
+
+| Signal | Points | Condition |
+|--------|--------|-----------|
+| Band touch | 3 | For calls: today's low <= lower BBand. For puts: today's high >= upper BBand |
+| RSI extreme | 3 | For calls: RSI(14) ≤ 30. For puts: RSI(14) ≥ 70 |
+| Reversal candle | 2 | For calls: today's close > today's open AND lower wick > 0.5 × body. For puts: mirror |
+| Distance from mean | 1 | For calls: close is at least 1.5 ATR below ema20. For puts: at least 1.5 ATR above |
+| Volume spike on touch | 1 | Today's volume > 1.2 × 20-day average (capitulation/exhaustion) |
+
+**Minimum score: 6/10.** This is a higher bar relative to max than the trend setups, because mean-reversion in a non-trending market needs cleaner setups to overcome the lack of directional tailwind.
+
+#### Choppy (restricted, only if `allow_choppy = true`)
+
+Same signal set as Range-Bound, but **minimum score 8/10** (almost perfect setup) and **size factor 0.5** (half the normal position). This is the "we know it's risky but we want to keep the bot working" sub-strategy.
+
+### Score → action mapping
+
+Score determines two things: whether to enter, and how big.
+
+| Regime | Min score | Sizing tiers (score → size factor) |
+|--------|-----------|-----------------------------------|
+| TrendUp / TrendDown | 7/12 | 7-8: 0.5×  •  9-10: 0.75×  •  11-12: 1.0× |
+| RangeBound | 6/10 | 6: 0.5×  •  7-8: 0.75×  •  9-10: 1.0× |
+| Choppy (if enabled) | 8/10 | 8-10: 0.5× (always half) |
+
+The size factor is multiplied against `max_position_usd` to get the dollar budget for that trade.
+
+### Entry procedure (revised)
+
+```
+1. Fetch latest daily bars (with staleness check)
+2. STAGE 1: Run all vetoes. Any failure → reject silently.
+3. STAGE 2: Classify regime.
+4. If regime is Choppy and allow_choppy is false → reject.
+5. STAGE 3: Score using the regime-appropriate signal set.
+6. If score < min for that regime → reject.
+7. Determine direction (long calls or long puts) from regime.
+8. Look up size factor from score tier.
+9. Compute target position dollars = max_position_usd × size_factor.
+10. Fetch options chain.
+11. Filter contracts:
+    a. Right (call/put) per direction
+    b. Delta 0.30–0.45
+    c. DTE 14–45
+    d. Premium × 100 ≤ target position dollars
+    e. Open interest ≥ 100, volume ≥ 50, spread ≤ $0.20
+12. Rank: delta closest to 0.35 → tightest spread → highest OI.
+13. Submit limit order at mid-price.
+14. Tag the position with regime, score, and entry timestamp for exit logic.
+```
+
+### What this fixes (vs. week 1)
+
+| Week 1 problem | v2.1 fix |
+|----------------|----------|
+| CLF, BAC, SPY scoring exactly 6.0 every scan | Regime-specific scoring + vetoes; flat baselines no longer pass |
+| 69% of scans were choppy and got traded anyway | Choppy is now an explicit decision (`allow_choppy`), not the default |
+| NIO stopped out 5 min after entry | "Too close to extreme" veto + minimum hold time (§6) |
+| EMA50 trend signal applied to non-trending markets | Trend signals only score in trend regimes |
+| 1,038 entries / 3,907 scans (27%) | Expected v2.1 entry rate: 3-8% of scans |
 
 ### Contract Selection Preferences
 
-```
-[entry]
-min_confluence_score = 8
-preferred_delta      = 0.35
-delta_min            = 0.30
-delta_max            = 0.45
-dte_min              = 14
-dte_max              = 45
-iv_rank_min          = 15
-iv_rank_max          = 60
-order_type           = "limit"
-limit_price_method   = "mid"    # (bid + ask) / 2
+```toml
+[strategy.entry]
+# Vetoes
+stale_bar_max_minutes      = 90
+iv_rank_veto_high          = 60
+iv_rank_veto_low           = 10
+underlying_spread_pct_max  = 8.0
+recent_gap_atr             = 2.0
+min_avg_volume_shares      = 500_000
+extreme_proximity_atr      = 0.5
+cooldown_after_close_hours = 4
+
+# Regime classification
+adx_trend_min              = 22
+adx_range_max              = 18
+bb_width_min_pct           = 5.0
+ema_slope_lookback_bars    = 5
+
+# Scoring thresholds
+trend_min_score            = 7
+range_min_score            = 6
+choppy_min_score           = 8
+allow_choppy               = false  # default off; flip to true at your own risk
+
+# Contract filters (unchanged from v2.0)
+preferred_delta            = 0.35
+delta_min                  = 0.30
+delta_max                  = 0.45
+dte_min                    = 14
+dte_max                    = 45
+order_type                 = "limit"
+limit_price_method         = "mid"
 ```
 
 ---
@@ -312,7 +487,10 @@ limit_price_method   = "mid"    # (bid + ask) / 2
 
 ### Exit is where money is made or saved. This section is critical.
 
-The system uses a **three-tier exit framework**:
+The system uses a **three-tier exit framework**, plus two new gates added in v2.1:
+
+- **Market hours gate:** Exit signals can only fire during regular market hours (9:30–16:00 ET). Signals computed outside that window are queued for the next open. Week 1 had three exits fire at 00:00 UTC on stale prices — that bug is closed by this gate.
+- **Minimum hold gate:** For non-emergency exits, a position must be held for at least `min_hold_minutes` (default: 60 minutes of market time, ~1 trading hour). This prevents the "stopped out in 5 minutes" pattern that hit NIO in week 1. Stop-loss can still fire inside the hold window only if loss exceeds `emergency_stop_pct` (-50%).
 
 ### Tier 1: Profit Target (Happy Path)
 
@@ -326,13 +504,16 @@ The system uses a **three-tier exit framework**:
 
 ### Tier 2: Stop-Loss (Capital Preservation)
 
-| Condition | Action |
-|-----------|--------|
-| Unrealized P&L <= -30% of premium paid | Close entire position immediately |
-| Underlying breaks below EMA50 (for calls) or above EMA50 (for puts) | Close position regardless of P&L |
-| Confluence score drops below 4 | Close position (thesis invalidated) |
+| Condition | Action | Honors min hold? |
+|-----------|--------|------------------|
+| Unrealized P&L <= -30% of premium paid | Close entire position | Yes (min hold applies) |
+| Unrealized P&L <= -50% of premium paid (emergency) | Close immediately | **No** (overrides min hold) |
+| Underlying breaks EMA50 against position, AND position held > min_hold_minutes | Close position | Yes |
+| Confluence score on re-evaluation drops below 4 | Close position | Yes |
 
 **Stop-loss is NON-NEGOTIABLE.** The daemon must enforce this mechanically. No manual override. No "let it ride." A 30% loss on a $200 position is $60. A 100% loss is $200. The difference compounds quickly on a $1,000 account.
+
+**v2.1 change:** The min-hold rule means a stop-loss inside the first 60 minutes is *only* allowed at the emergency threshold. This is a deliberate trade-off: we accept slightly larger occasional losses in exchange for not getting shaken out by 5-minute noise.
 
 ### Tier 3: Time-Based Decay Management
 
@@ -347,13 +528,40 @@ The system uses a **three-tier exit framework**:
 ### Exit Priority (highest to lowest)
 
 ```
-1. Stop-loss breach (-30%)     → IMMEDIATE close
-2. DTE <= 7 with < +10% P&L   → IMMEDIATE close
-3. Profit target hit (+50%)    → Close
-4. EMA50 break (thesis dead)   → Close
-5. Time decay (DTE <= 10)      → Close
-6. Dead money (5 days, < 5%)   → Close
-7. Confluence score collapse   → Close
+1. Emergency stop-loss (-50%)        → IMMEDIATE close (overrides min hold + market hours where legal)
+2. Stop-loss breach (-30%)           → close (subject to min hold + market hours)
+3. DTE <= 7 with < +10% P&L          → close
+4. Profit target hit (+50%)          → close
+5. EMA50 break (thesis dead)         → close (subject to min hold)
+6. Time decay (DTE <= 10)            → close
+7. Dead money (5 days, < 5%)         → close
+8. Confluence score collapse         → close (subject to min hold)
+```
+
+### Exit gates summary
+
+```
+def can_exit(position, exit_reason, now):
+    # Emergency always allowed during market hours
+    if exit_reason == "emergency_stop":
+        return market_open(now)
+
+    # All other exits require market hours
+    if not market_open(now):
+        queue_for_next_open(position, exit_reason)
+        return False
+
+    # Profit targets and time-based exits ignore min hold
+    if exit_reason in ("profit_target", "time_decay", "dead_money"):
+        return True
+
+    # Stop-loss and thesis exits honor min hold
+    held_minutes = (now - position.opened_at).market_minutes()
+    if held_minutes < min_hold_minutes:
+        log(f"{exit_reason} suppressed: only held {held_minutes} min")
+        return False
+
+    return True
 ```
 
 ### PDT-Aware Exit Logic
@@ -365,27 +573,14 @@ Before submitting any exit order:
 2. If YES:
    a. Check day_trade_count in rolling 5-day window
    b. If day_trade_count >= max_day_trades_per_5d (2):
-      - BLOCK the exit UNLESS:
-        i.  Stop-loss at emergency threshold (loss >= emergency_stop_pct 50%) → ALLOW
-        ii. Exceptional win (gain >= exceptional_win_pct 75%) → ALLOW (take the money)
-      - Otherwise: log warning "PDT limit reached, holding overnight"
+      - BLOCK the exit UNLESS stop-loss is at emergency threshold (-50%)
+      - Log warning: "PDT limit reached, holding overnight"
       - Set position.force_exit_next_open = true
    c. If day_trade_count < max_day_trades_per_5d:
-      - Allow exit, increment counter
-      - Log: "Day trade #{n} used"
+      - Allow exit but increment counter
+      - Log: "Day trade #{n} used — emergency exit"
 3. If NO (opened on a prior day):
    - Allow exit normally, does NOT count as day trade
-```
-
-**Exceptional win rule:** If an intraday position has gained ≥ 75% of premium paid *and* we still have day trade budget remaining, always take the profit — do not hold overnight to avoid a day trade. A 75%+ same-day gain is unusual and worth spending a day trade on. If the PDT limit is already hit, the position is held overnight and flagged `force_exit_next_open = true`.
-
-```toml
-[pdt]
-max_day_trades_per_5d  = 2
-rolling_window_days    = 5
-emergency_stop_pct     = 50.0   # allow same-day close at this loss %
-exceptional_win_pct    = 75.0   # allow same-day close at this gain %
-block_on_limit         = true
 ```
 
 ```
@@ -420,11 +615,17 @@ min_cash_reserve_pct   = 30.0   # always keep 30% cash ($300 on $1,000)
 
 ### Dynamic Sizing Based on Confidence
 
-| Confluence Score | Position Size |
-|-----------------|---------------|
-| 8–10 (minimum threshold) | 50% of max_position_usd ($100) |
-| 11–14 (moderate confidence) | 75% of max_position_usd ($150) |
-| 15+ (high confidence) | 100% of max_position_usd ($200) |
+Sizing is regime-specific in v2.1 because the score ranges differ between regimes (trend max 12, range max 10). The full table lives in §5 and the config in §13. The short version:
+
+| Regime | Score range | Size factor → dollars (on $200 base) |
+|--------|-------------|---------------------------------------|
+| Trend (up/down) | 7–8 | 0.50× → $100 |
+| Trend (up/down) | 9–10 | 0.75× → $150 |
+| Trend (up/down) | 11–12 | 1.00× → $200 |
+| Range-Bound | 6 | 0.50× → $100 |
+| Range-Bound | 7–8 | 0.75× → $150 |
+| Range-Bound | 9–10 | 1.00× → $200 |
+| Choppy (if enabled) | 8–10 | 0.50× → $100 (always half) |
 
 ### Capital Allocation Rules
 
@@ -779,26 +980,51 @@ scan_end_time          = "15:45"
 market_data_cooldown   = 2
 
 [strategy.entry]
-min_confluence_score   = 8
-preferred_delta        = 0.35
-delta_min              = 0.30
-delta_max              = 0.45
-dte_min                = 14
-dte_max                = 45
-order_type             = "limit"
-limit_price_method     = "mid"
+# ── Vetoes (Stage 1) ──
+stale_bar_max_minutes      = 90
+iv_rank_veto_high          = 60
+iv_rank_veto_low           = 10
+underlying_spread_pct_max  = 8.0
+recent_gap_atr             = 2.0
+min_avg_volume_shares      = 500_000
+extreme_proximity_atr      = 0.5
+cooldown_after_close_hours = 4
+
+# ── Scoring thresholds (Stage 3) ──
+trend_min_score            = 7   # max 12
+range_min_score            = 6   # max 10
+choppy_min_score           = 8   # max 10
+allow_choppy               = false
+
+# ── Contract filters ──
+preferred_delta            = 0.35
+delta_min                  = 0.30
+delta_max                  = 0.45
+dte_min                    = 14
+dte_max                    = 45
+order_type                 = "limit"
+limit_price_method         = "mid"
 
 [strategy.exit]
-profit_target_partial_pct = 30.0
-profit_target_full_pct    = 50.0
-profit_target_single_pct  = 40.0
-stop_loss_pct             = 30.0
-emergency_stop_pct        = 50.0
-time_exit_dte             = 10
-theta_exit_dte            = 7
-theta_exit_min_pnl_pct    = 10.0
-dead_money_days           = 5
-dead_money_min_pct        = 5.0
+# ── New v2.1 gates ──
+min_hold_minutes           = 60     # min market-time hold before non-emergency exits arm
+market_hours_only          = true   # exit signals queue if outside RTH
+
+# ── Profit targets ──
+profit_target_partial_pct  = 30.0
+profit_target_full_pct     = 50.0
+profit_target_single_pct   = 40.0
+
+# ── Stops ──
+stop_loss_pct              = 30.0
+emergency_stop_pct         = 50.0   # overrides min_hold_minutes
+
+# ── Time / decay ──
+time_exit_dte              = 10
+theta_exit_dte             = 7
+theta_exit_min_pnl_pct     = 10.0
+dead_money_days            = 5
+dead_money_min_pct         = 5.0
 
 # ──────────────────────────────────────
 # Regime Detection
@@ -807,9 +1033,12 @@ dead_money_min_pct        = 5.0
 ema_fast               = 9
 ema_mid                = 20
 ema_slow               = 50
+ema_slope_lookback     = 5      # bars to check for EMA20 slope
 adx_period             = 14
-adx_trend_threshold    = 25
-adx_no_trend_threshold = 20
+adx_trend_min          = 22     # was 25 in v2.0; tightened from week 1's 22 stays
+adx_range_max          = 18     # was 20 in v2.0; widens range zone
+bb_width_min_pct       = 5.0    # min BBand width to qualify as range
+range_mean_proximity   = 0.05   # close must be within 5% of EMA50 for range
 rsi_period             = 14
 rsi_overbought         = 70
 rsi_oversold           = 30
@@ -843,21 +1072,44 @@ max_open_positions     = 4
 min_cash_reserve_pct   = 30.0
 max_sector_positions   = 2
 
-# Score-based sizing tiers
-[[sizing.tiers]]
+# Score-based sizing tiers (regime-aware, see §5)
+# Trend regime: max score 12, min 7
+[[sizing.tiers.trend]]
+score_min = 7
+score_max = 8
+size_factor = 0.50
+
+[[sizing.tiers.trend]]
+score_min = 9
+score_max = 10
+size_factor = 0.75
+
+[[sizing.tiers.trend]]
+score_min = 11
+score_max = 12
+size_factor = 1.00
+
+# Range regime: max score 10, min 6
+[[sizing.tiers.range]]
+score_min = 6
+score_max = 6
+size_factor = 0.50
+
+[[sizing.tiers.range]]
+score_min = 7
+score_max = 8
+size_factor = 0.75
+
+[[sizing.tiers.range]]
+score_min = 9
+score_max = 10
+size_factor = 1.00
+
+# Choppy regime: only fires if allow_choppy=true, always half size
+[[sizing.tiers.choppy]]
 score_min = 8
 score_max = 10
 size_factor = 0.50
-
-[[sizing.tiers]]
-score_min = 11
-score_max = 14
-size_factor = 0.75
-
-[[sizing.tiers]]
-score_min = 15
-score_max = 25
-size_factor = 1.00
 
 # ──────────────────────────────────────
 # Risk Guard
@@ -1045,3 +1297,5 @@ ORDER BY day DESC;
 ---
 
 *This strategy document is the authoritative reference for Ferrum's trading logic. All implementation decisions should defer to the specifications here. When in doubt, prioritize capital preservation over profit maximization.*
+
+*Disclaimer: This is for educational and paper trading purposes. Options trading involves significant risk of loss. Past performance does not guarantee future results. Always validate strategies thoroughly in paper trading before risking real capital.*

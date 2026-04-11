@@ -68,48 +68,82 @@ ferrum/
 │   ├── ferrum-tui/         # ratatui frontend
 │   └── ferrum-export/      # tax/CSV export tooling
 └── docs/
-    ├── ferrum-build-plan.md           # phase-by-phase build plan
-    └── ferrum-iron-conduit-strategy.md  # full strategy specification
+    ├── ferrum-build-plan.md              # phase-by-phase build plan
+    ├── ferrum-iron-conduit-strategy.md   # full strategy specification (v2.1)
+    └── week-1-report-2026-04-11.md       # paper trading week 1 debrief
 ```
 
 The build plan and strategy doc in `docs/` are the authoritative references. Each Claude Code session starts by reading the relevant doc alongside `git log --oneline -10` and `TODO.md`.
 
-## Strategy: Multi-Regime Confluence (`iron-conduit`)
+## Strategy: Multi-Regime Iron Condor v2.1
 
 > Full specification: [`docs/ferrum-iron-conduit-strategy.md`](docs/ferrum-iron-conduit-strategy.md)
 
 ### Overview
 
-A **probability-weighted, multi-signal confluence system** designed for a $1,000 cash account. Not a directional gamble — every entry requires multiple independent indicators to agree before a contract is selected.
+A **probability-weighted, multi-regime confluence system** designed for a $1,000 cash account. Entries require passing three sequential gates — hard vetoes, a positive regime identification, and a regime-specific quality score — before a contract is selected.
 
-### How it works
+### The three-stage gate
 
-1. **Regime detection** — classifies each symbol as Trending Up, Trending Down, Range-Bound, or Choppy using EMA9/20/50 and ADX. Choppy = no trade.
-2. **Confluence scoring** — 11 signals scored across EMA alignment, RSI zone, MACD crossover, ADX strength, Bollinger Band position, and volume. **Minimum score of 8 required to proceed.**
-3. **Contract selection** — fetches live options chain from Alpaca, filters by delta (0.30–0.45), DTE (14–45 days), premium budget (≤$200), liquidity (OI ≥100, volume ≥50, spread ≤$0.20), and IV rank (≤60).
-4. **Position sizing** — scales by confluence score (50% / 75% / 100% of max) and IV rank.
-5. **Exit management** — tiered exits: profit target (40–50% gain), stop-loss (30% loss), time decay (DTE ≤10), and dead-money close (5 days with <5% move).
+```
+STAGE 1: VETOES (hard pass/fail)
+  → stale bar, IV rank out of range, extreme proximity to 20d high/low,
+    within 4h cooldown of closing same underlying
+         │ all pass
+         ▼
+STAGE 2: REGIME CLASSIFICATION (must positively identify)
+  → Trending Up:   close > EMA20 > EMA50, ADX ≥ 22, +DI > −DI, EMA20 rising
+  → Trending Down: close < EMA20 < EMA50, ADX ≥ 22, −DI > +DI, EMA20 falling
+  → Range-Bound:   ADX < 18, BB width ≥ 5%, price within 5% of EMA50
+  → Choppy:        everything else → NO TRADE (unless allow_choppy = true)
+         │ regime identified
+         ▼
+STAGE 3: QUALITY SCORING (regime-specific signal set)
+  → Trend (max 12): EMA9/20 wick touch, RSI 40–55, MACD inflecting,
+                    higher-low structure, volume contraction, ADX strength
+  → Range (max 10): band touch, RSI extreme (≤30/≥70), reversal candle,
+                    distance from mean, exhaustion volume spike
+```
+
+### Entry thresholds
+
+| Regime | Min score | Sizing (score → factor) |
+|---|---|---|
+| Trending Up / Down | 7/12 | 7–8 → 0.5×  ·  9–10 → 0.75×  ·  11–12 → 1.0× |
+| Range-Bound | 6/10 | 6 → 0.5×  ·  7–8 → 0.75×  ·  9–10 → 1.0× |
+| Choppy (if enabled) | 8/10 | always 0.5× |
+
+### Contract selection
+
+Fetches live options chain from Alpaca, filters by: delta 0.30–0.45, DTE 14–45 days, premium ≤ $200, OI ≥ 100, volume ≥ 50, spread ≤ $0.20, IV rank ≤ 60. Ranks by delta closest to 0.35, then highest OI.
+
+### Exit management
+
+| Priority | Trigger | Action |
+|---|---|---|
+| 1 | Loss ≥ 50% (emergency) | Close immediately |
+| 2 | Loss ≥ 30% (after 8h hold) | Close |
+| 3 | DTE ≤ 7 and P&L < +10% | Close (theta eating premium) |
+| 4 | Trailing profit hit | Close (activates at +15%, trails 7% below peak) |
+| 5 | EMA50 break (thesis dead) | Close (market hours only) |
+| 6 | DTE ≤ 10 | Time exit |
+| 7 | 5 days held, < 5% move | Dead money — redeploy |
 
 ### PDT protection
 
-Cash account, max **2 day trades per rolling 5-day window**. Same-day exits are only allowed if:
-- Loss ≥ 50% of premium (emergency stop), or
-- Gain ≥ 75% of premium (exceptional win — take the money), or
-- Day trade budget is not yet used
-
-Otherwise positions are held overnight and flagged for exit at next open.
+Cash account, max **2 day trades per rolling 5-day window**. Same-day exits only allowed for emergency stops (−50%) or exceptional wins (+75%). All other exits held overnight and flagged for next open.
 
 ### Symbol universe
 
 | Tier | Symbols | Condition |
 |---|---|---|
 | 1 | SPY, QQQ, IWM | Always scan |
-| 2 | F, SOFI, PLTR, NIO, RIVN, HOOD, SNAP, AAL, CLF, T, PFE, BAC, INTC | Always scan |
-| 3 | AMD, AMZN, AAPL, MARA, COIN | Only when IV rank ≥ 40 |
+| 2 | F, SOFI, PLTR, NIO, RIVN, HOOD, SNAP, AAL, CLF, T, PFE, BAC, UBER, LYFT, FCX, SIRI | Always scan |
+| 3 | AAPL, COIN | Only when IV rank ≥ 40 |
 
 ### Target performance
 
-- Win rate: 55–65% | Avg winner: +20–40% | Avg loser: -15–25%
+- Win rate: 55–65% | Avg winner: +20–40% | Avg loser: −15–25%
 - Monthly target: 3–8% on capital | Max drawdown tolerance: 10% ($100)
 
 ## Quickstart
