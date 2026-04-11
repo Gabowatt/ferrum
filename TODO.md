@@ -92,34 +92,39 @@
 - [x] Week 2 tuning: removed AMZN, AMD, MARA, INTC, VALE from symbol universe (avg score 3.0–3.7)
 - [x] PDT bug (false alarm): PDT correctly blocked at limit; NIO was allowed through as emergency stop (-54% > 50% threshold)
 
+## Completed this session (v2.1 strategy implementation — 2026-04-07)
+
+- [x] Added v2.1 EntryConfig fields: trend_min_score, range_min_score, choppy_min_score, allow_choppy,
+      extreme_proximity_atr, cooldown_after_close_hours, bb_width_min_pct, ema_slope_lookback_bars
+- [x] Rewrote confluence_score with regime-specific signal sets:
+      - Trend (max 12): EMA9/20 touch, RSI zone, MACD hist inflection, higher-low/lower-high, volume contraction, ADX strength
+      - Range/Choppy (max 10): band touch, RSI extreme, reversal candle, distance from mean, volume spike
+- [x] Updated detect_regime to require +DI/-DI direction, EMA20 slope, BB width ≥ 5% for RangeBound
+- [x] Added BarContext struct (high, low, open, 5d extremes, 20d extremes, MACD hist prev)
+- [x] Added extreme proximity veto — rejects call if high within 0.5 ATR of 20d high, put if low near 20d low
+- [x] Added cooldown veto — no new entries in same underlying within 4h of closing a position
+- [x] Regime-specific sizing: trend 7-8=0.5×, 9-10=0.75×, 11-12=1.0×; range 6=0.5×, 7-8=0.75×, 9-10=1.0×
+- [x] AppState: added last_close_by_underlying for cooldown tracking
+- [x] order_poller.rs: records close timestamp on confirmed fill
+
 ## Next session — resume here
 
 ### Priority 1 — Post-Alpaca Plus (once upgrade completes)
 - [ ] Drop TUI polling intervals (pnl: 30s, positions: 10s, fills: 10s)
 - [ ] Set market_data_cooldown = 0 in config.toml
 - [ ] Investigate SPY/QQQ/IWM/F/BAC chain data gaps (currently no_contracts on free indicative feed)
-- [ ] Consider re-raising min_confluence_score to 8 once chain data gaps are resolved
 
-### Priority 2 — Sector concentration tracking
-`RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
-- Add sector map to config or hard-code in risk.rs
-- Block entry if open positions in same sector >= max_sector_positions
+### Priority 2 — watch week 2 paper trading data
+- Query scan_results: which symbols consistently score ≥ threshold under v2.1
+- Which outcome dominates: below_threshold / no_contracts / choppy / extreme_proximity / entered
+- Expect entry rate to drop from 27% → 3-8% with v2.1 vetoes
 
-### Priority 3 — TUI polish
-- `[B]` buying power panel — free cash + used margin
-
-### Priority 2 — watch paper trading data
-- Query scan_results: which symbols consistently score ≥ 6
-- Which outcome dominates: below_threshold / no_contracts / entered
-- Check if rate limits are still an issue (Alpaca Plus upgrade in progress)
-
-### Priority 3 — sector concentration tracking
+### Priority 3 — Sector concentration tracking
 `RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
 - Add sector map to config or hard-code in risk.rs
 - Block entry if open positions in same sector >= max_sector_positions
 
 ### Priority 4 — TUI polish (when ready)
-- `[P]` privacy toggle — hide PnL values (show `****`)
 - `[B]` buying power panel — free cash + used margin
 
 ## To run
