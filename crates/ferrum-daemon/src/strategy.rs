@@ -8,7 +8,7 @@ use chrono::{Datelike, Timelike, Utc};
 use ferrum_core::{
     client::AlpacaClient,
     error::FerrumError,
-    indicators::{self, TradeDirection},
+    indicators::{self, BarContext, TradeDirection},
     types::{BotStatus, FillRecord, LegAction, LogEvent, OptionLeg, OrderType, Signal},
 };
 use crate::{
@@ -356,7 +356,7 @@ impl IronConduitStrategy {
         client: &AlpacaClient,
         symbol: &str,
         days: u32,
-    ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), FerrumError> {
+    ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), FerrumError> {
         let start = (Utc::now() - chrono::Duration::days(days as i64))
             .format("%Y-%m-%dT00:00:00Z").to_string();
 
@@ -377,7 +377,52 @@ impl IronConduitStrategy {
         let highs:   Vec<f64> = resp.bars.iter().map(|b| b.high).collect();
         let lows:    Vec<f64> = resp.bars.iter().map(|b| b.low).collect();
         let volumes: Vec<f64> = resp.bars.iter().map(|b| b.volume).collect();
-        Ok((closes, highs, lows, volumes))
+        let opens:   Vec<f64> = resp.bars.iter().map(|b| b.open).collect();
+        Ok((closes, highs, lows, volumes, opens))
+    }
+
+    /// Build a BarContext for confluence scoring from the raw bars arrays.
+    fn make_bar_context(
+        closes:  &[f64],
+        highs:   &[f64],
+        lows:    &[f64],
+        opens:   &[f64],
+        volumes: &[f64],
+    ) -> Option<BarContext> {
+        let n = closes.len();
+        if n < 21 { return None; }
+
+        let high  = *highs.last()?;
+        let low   = *lows.last()?;
+        let open  = *opens.last()?;
+
+        // 5 bars ago (index n-6)
+        let low_5b_ago  = lows.get(n.wrapping_sub(6)).copied().unwrap_or(low);
+        let high_5b_ago = highs.get(n.wrapping_sub(6)).copied().unwrap_or(high);
+
+        // 20-day rolling extremes (excluding today)
+        let window_start = n.saturating_sub(21);
+        let high_20d = highs[window_start..n-1].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let low_20d  = lows[window_start..n-1].iter().cloned().fold(f64::INFINITY, f64::min);
+
+        // MACD histogram from the previous bar
+        let macd_hist_prev = if n >= 2 {
+            let m = indicators::macd_last(&closes[..n-1], 12, 26, 9);
+            m.histogram
+        } else {
+            f64::NAN
+        };
+
+        // Volume ratio is not directly needed here (it's in the snapshot), but included
+        // so that future callers can use it without recomputing.
+        let _ = volumes; // suppress unused warning
+
+        Some(BarContext {
+            high, low, open,
+            low_5b_ago, high_5b_ago,
+            high_20d, low_20d,
+            macd_hist_prev,
+        })
     }
 }
 
@@ -414,8 +459,25 @@ impl Strategy for IronConduitStrategy {
 
         for symbol in all_symbols {
             sleep(cooldown).await;
+
+            // ── Cooldown veto: skip if we closed this underlying recently ────────
+            let cooldown_hours = entry.cooldown_after_close_hours;
+            {
+                let last_close_map = state.last_close_by_underlying.lock().await;
+                if let Some(&closed_at) = last_close_map.get(symbol) {
+                    let hours_since = (Utc::now() - closed_at).num_minutes() as f64 / 60.0;
+                    if hours_since < cooldown_hours {
+                        let _ = state.log_tx.send(LogEvent::info(format!(
+                            "[iron-conduit] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
+                            hours_since, cooldown_hours,
+                        )));
+                        continue;
+                    }
+                }
+            }
+
             // Fetch daily bars for indicator computation
-            let (closes, highs, lows, volumes) =
+            let (closes, highs, lows, volumes, opens) =
                 match Self::fetch_bars(&state.client, symbol, 90).await {
                     Ok(data) => data,
                     Err(e) => {
@@ -435,6 +497,7 @@ impl Strategy for IronConduitStrategy {
             let snap = match indicators::compute_snapshot(
                 &closes, &highs, &lows, &volumes,
                 rc.adx_trend_threshold, rc.adx_no_trend_threshold,
+                entry.bb_width_min_pct, entry.ema_slope_lookback_bars,
             ) {
                 Some(s) => s,
                 None => {
@@ -445,19 +508,31 @@ impl Strategy for IronConduitStrategy {
                 }
             };
 
+            // Build bar context for v2.1 scoring
+            let ctx = match Self::make_bar_context(&closes, &highs, &lows, &opens, &volumes) {
+                Some(c) => c,
+                None => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol}: bar context failed")));
+                    continue;
+                }
+            };
+
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1}",
+                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
                 snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx,
+                snap.bbands.width * 100.0,
             )));
 
-            // Confluence gate
-            let (score, direction) = match indicators::confluence_score(
-                &snap, rc.rsi_overbought, rc.rsi_oversold,
+            // ── Confluence gate (v2.1 regime-specific scoring) ───────────────
+            let (score, max_score, direction) = match indicators::confluence_score(
+                &snap, &ctx, entry.allow_choppy,
             ) {
                 Some(s) => s,
                 None => {
-                    // Should not reach here (Choppy now scores instead of returning None),
-                    // but guard just in case.
+                    // Choppy regime and allow_choppy = false
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol}: choppy regime — no trade (allow_choppy=false)",
+                    )));
                     let _ = state.db.insert_scan_result(
                         symbol, &snap.regime.to_string(), 0, None, "choppy",
                     ).await;
@@ -470,21 +545,49 @@ impl Strategy for IronConduitStrategy {
                 TradeDirection::Put  => "put",
             };
 
+            // Regime-specific minimum score gate
+            use ferrum_core::indicators::Regime;
+            let min_score = match snap.regime {
+                Regime::TrendingUp | Regime::TrendingDown => entry.trend_min_score,
+                Regime::RangeBound                        => entry.range_min_score,
+                Regime::Choppy                            => entry.choppy_min_score,
+            };
+
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: score={score}/15 dir={dir_str} regime={}",
+                "[iron-conduit] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
                 snap.regime,
             )));
 
-            if score < entry.min_confluence_score {
+            if score < min_score {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: score {score} < min {} — skip",
-                    entry.min_confluence_score,
+                    "[iron-conduit] {symbol}: score {score} < min {min_score} — skip",
                 )));
                 let _ = state.db.insert_scan_result(
                     symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "below_threshold",
                 ).await;
                 continue;
+            }
+
+            // ── Extreme proximity veto ───────────────────────────────────────
+            // Reject if today's high (for calls) is within `extreme_proximity_atr` ATRs
+            // of the 20-day high — buying at the local extreme is a high-probability stop-out.
+            if !snap.atr.is_nan() && snap.atr > 0.0 {
+                let proximity_threshold = entry.extreme_proximity_atr * snap.atr;
+                let vetoed = match direction {
+                    TradeDirection::Call => ctx.high_20d - ctx.high < proximity_threshold,
+                    TradeDirection::Put  => ctx.low - ctx.low_20d  < proximity_threshold,
+                };
+                if vetoed {
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
+                    )));
+                    let _ = state.db.insert_scan_result(
+                        symbol, &snap.regime.to_string(), score as i32,
+                        Some(dir_str), "extreme_proximity",
+                    ).await;
+                    continue;
+                }
             }
 
             // IV rank check
@@ -628,7 +731,23 @@ impl Strategy for IronConduitStrategy {
             });
 
             if let Some((contract, mid, delta_score, oi)) = candidates.first() {
-                let size_factor = cfg.sizing.size_factor_for(score);
+                // v2.1 regime-specific size factors
+                let size_factor = {
+                    use ferrum_core::indicators::Regime;
+                    match snap.regime {
+                        Regime::Choppy => 0.5,  // always half size in choppy
+                        Regime::RangeBound => match score {
+                            s if s >= 9  => 1.0,
+                            s if s >= 7  => 0.75,
+                            _            => 0.5,
+                        },
+                        Regime::TrendingUp | Regime::TrendingDown => match score {
+                            s if s >= 11 => 1.0,
+                            s if s >= 9  => 0.75,
+                            _            => 0.5,
+                        },
+                    }
+                };
                 let iv_adj      = iv_engine.size_factor(0.0);
                 let qty         = ((cfg.sizing.max_position_usd * size_factor * iv_adj)
                     / (mid * 100.0))
@@ -641,7 +760,7 @@ impl Strategy for IronConduitStrategy {
 
                 let _ = state.log_tx.send(LogEvent::info(format!(
                     "[iron-conduit] SIGNAL {symbol} {contract} dir={dir_str} \
-                     mid=${mid:.2} score={score}/15 delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
+                     mid=${mid:.2} score={score}/{max_score} size={size_factor:.2} delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
                 )));
                 let _ = state.db.insert_scan_result(
                     symbol, &snap.regime.to_string(), score as i32,

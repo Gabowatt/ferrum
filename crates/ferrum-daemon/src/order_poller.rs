@@ -137,6 +137,10 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             }
 
                             state.open_positions.lock().await.remove(&contract);
+
+                            // Record close timestamp for entry cooldown veto
+                            state.last_close_by_underlying.lock().await
+                                .insert(meta.underlying.clone(), Utc::now());
                         }
                         "canceled" | "expired" => {
                             let _ = state.log_tx.send(LogEvent::warn(format!(

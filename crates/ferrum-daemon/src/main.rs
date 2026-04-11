@@ -52,6 +52,8 @@ pub struct AppState {
     pub db:             db::Database,
     pub pdt:            Mutex<pdt::PdtTracker>,
     pub open_positions: Mutex<std::collections::HashMap<String, OpenPositionMeta>>,
+    /// Timestamp of the last position close for each underlying — used for cooldown veto.
+    pub last_close_by_underlying: Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
 }
 
 #[tokio::main]
@@ -113,6 +115,7 @@ async fn main() -> Result<(), FerrumError> {
         db,
         pdt:            Mutex::new(pdt_tracker),
         open_positions: Mutex::new(std::collections::HashMap::new()),
+        last_close_by_underlying: Mutex::new(std::collections::HashMap::new()),
     });
 
     // Persist log events to SQLite — subscribe before the first send.
