@@ -110,15 +110,40 @@ pub struct StrategyConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EntryConfig {
-    pub min_confluence_score: u32,
-    pub preferred_delta:      f64,
-    pub delta_min:            f64,
-    pub delta_max:            f64,
-    pub dte_min:              u32,
-    pub dte_max:              u32,
-    pub order_type:           String,
-    pub limit_price_method:   String,
+    // ── Regime-specific thresholds (v2.1) ────────────────────────────────────
+    /// Minimum score for trend regime entries (max score 12).
+    pub trend_min_score:             u32,
+    /// Minimum score for range-bound regime entries (max score 10).
+    pub range_min_score:             u32,
+    /// Minimum score for choppy regime entries (max score 10). Requires allow_choppy = true.
+    pub choppy_min_score:            u32,
+    /// Allow entries in Choppy regime (restricted mean-reversion, half size). Default: false.
+    pub allow_choppy:                bool,
+    // ── Veto thresholds (v2.1) ───────────────────────────────────────────────
+    /// Reject call entries if today's high is within this many ATRs of the 20-day high.
+    /// Reject put entries if today's low is within this many ATRs of the 20-day low.
+    pub extreme_proximity_atr:       f64,
+    /// Reject entries in an underlying if we closed a position in it within this many hours.
+    pub cooldown_after_close_hours:  f64,
+    // ── Regime classification (v2.1) ─────────────────────────────────────────
+    /// Minimum Bollinger Band width (%) to qualify as range-bound (prevents entries in squeezes).
+    pub bb_width_min_pct:            f64,
+    /// Number of bars to look back for EMA20 slope calculation.
+    pub ema_slope_lookback_bars:     usize,
+    // ── Legacy single threshold (kept for fallback logging) ──────────────────
+    #[serde(default = "default_min_score")]
+    pub min_confluence_score:        u32,
+    // ── Contract filters (unchanged) ─────────────────────────────────────────
+    pub preferred_delta:             f64,
+    pub delta_min:                   f64,
+    pub delta_max:                   f64,
+    pub dte_min:                     u32,
+    pub dte_max:                     u32,
+    pub order_type:                  String,
+    pub limit_price_method:          String,
 }
+
+fn default_min_score() -> u32 { 7 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExitConfig {
