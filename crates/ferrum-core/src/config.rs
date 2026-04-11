@@ -132,6 +132,9 @@ pub struct ExitConfig {
     pub profit_target_partial_pct: f64,
     pub profit_target_full_pct:    f64,
     // ── Other exits ───────────────────────────────────────────────────────────
+    /// Stop-loss will not fire until position has been held this many hours.
+    /// Emergency stop (loss >= emergency_stop_pct) bypasses this gate.
+    pub min_hold_hours:            f64,
     pub stop_loss_pct:             f64,
     pub emergency_stop_pct:        f64,
     pub time_exit_dte:             u32,

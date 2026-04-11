@@ -82,17 +82,31 @@
 
 ## Next session — resume here (Friday 2026-04-11)
 
-### Priority 1 — Bug fixes from week 1 report (address before next trading week)
-- [ ] EMA50 break exit fires at midnight on stale prices — gate exit submissions to market hours only
-- [ ] PDT day-trade counter may reset on daemon restart — verify count survives restarts (persist to DB on boot)
-- [ ] Add minimum hold time (1 trading day) before stop-loss arms — NIO was stopped out in 5 minutes
-- [ ] Remove AMZN, AMD, MARA, INTC from symbol universe — avg score 3.0–3.7, never generate entries
+## Completed this session (week 2 prep — 2026-04-11)
 
-### Priority 2 — Post-Alpaca Plus (once upgrade completes)
-- [ ] Drop TUI polling intervals back to real-time (pnl: 30s, positions: 10s)
+- [x] Bug fix: EMA50 break exit now gated to market hours (9:30–16:05 ET) — was firing at midnight on stale prices
+- [x] Bug fix: min_hold_hours = 8.0 added — stop-loss won't arm until position held 8h; emergency stop (-50%) bypasses gate
+- [x] Bug fix: was_emergency correctly recorded in day_trades DB (was always false)
+- [x] Bug fix: emergency_stop added as explicit exit reason (was previously just stop_loss at -50%)
+- [x] Week 2 tuning: min_confluence_score raised 6 → 7 (week 1 showed too many weak choppy entries)
+- [x] Week 2 tuning: removed AMZN, AMD, MARA, INTC, VALE from symbol universe (avg score 3.0–3.7)
+- [x] PDT bug (false alarm): PDT correctly blocked at limit; NIO was allowed through as emergency stop (-54% > 50% threshold)
+
+## Next session — resume here
+
+### Priority 1 — Post-Alpaca Plus (once upgrade completes)
+- [ ] Drop TUI polling intervals (pnl: 30s, positions: 10s, fills: 10s)
 - [ ] Set market_data_cooldown = 0 in config.toml
-- [ ] Re-evaluate min_confluence_score (currently 6) — may raise to 7 with better chain data
-- [ ] Investigate SPY/QQQ/IWM/F/BAC chain data gaps (currently no_contracts on free feed)
+- [ ] Investigate SPY/QQQ/IWM/F/BAC chain data gaps (currently no_contracts on free indicative feed)
+- [ ] Consider re-raising min_confluence_score to 8 once chain data gaps are resolved
+
+### Priority 2 — Sector concentration tracking
+`RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
+- Add sector map to config or hard-code in risk.rs
+- Block entry if open positions in same sector >= max_sector_positions
+
+### Priority 3 — TUI polish
+- `[B]` buying power panel — free cash + used margin
 
 ### Priority 2 — watch paper trading data
 - Query scan_results: which symbols consistently score ≥ 6

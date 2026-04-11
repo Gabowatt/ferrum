@@ -112,11 +112,15 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             ).await;
 
                             // Record day trade if applicable
-                            let is_day_trade = {
+                            let (is_day_trade, emergency_stop_pct) = {
                                 let pdt = state.pdt.lock().await;
-                                pdt.would_be_day_trade(meta.opened_at)
+                                (pdt.would_be_day_trade(meta.opened_at),
+                                 pdt.emergency_stop_pct)
                             };
                             if is_day_trade {
+                                let pnl_pct = if meta.entry_price > 0.0 {
+                                    (close_price - meta.entry_price) / meta.entry_price * 100.0
+                                } else { 0.0 };
                                 let dt_record = DayTradeRecord {
                                     contract_symbol: contract.clone(),
                                     underlying:      meta.underlying.clone(),
@@ -125,7 +129,7 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                                     open_price:      meta.entry_price,
                                     close_price,
                                     pnl,
-                                    was_emergency:   false,
+                                    was_emergency:   pnl_pct <= -emergency_stop_pct,
                                 };
                                 let _ = state.db.insert_day_trade(&dt_record).await;
                                 let mut pdt = state.pdt.lock().await;

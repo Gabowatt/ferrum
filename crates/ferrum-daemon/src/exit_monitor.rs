@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use serde::Deserialize;
-use chrono::Utc;
+use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     error::FerrumError,
@@ -36,9 +36,27 @@ pub async fn run_exit_monitor(state: Arc<AppState>) {
     }
 }
 
+// ── Market hours guard ────────────────────────────────────────────────────────
+
+/// Returns true if current ET time is within regular market hours (9:30–16:05).
+/// Uses local time offset — no API call needed.
+/// EDT (UTC-4) Mar–Nov, EST (UTC-5) Dec–Feb.
+fn is_market_hours() -> bool {
+    let now = Utc::now();
+    let month = now.month();
+    let et_offset: i64 = if month >= 3 && month <= 11 { -4 } else { -5 };
+    let et_hour = (now.hour() as i64 + et_offset).rem_euclid(24) as u32;
+    let et_mins = et_hour * 60 + now.minute();
+    et_mins >= 570 && et_mins < 965  // 9:30 AM–4:05 PM ET
+}
+
 // ── Core exit logic ───────────────────────────────────────────────────────────
 
 async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
+    // Never submit orders outside market hours — prices are stale and orders
+    // would be queued or rejected by Alpaca. Update peak P&L tracking only.
+    let market_open = is_market_hours();
+
     let alpaca_positions: Vec<AlpacaPosition> = match state.client.get("/v2/positions").await {
         Ok(v)  => v,
         Err(e) => {
@@ -72,9 +90,11 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             continue;
         }
 
-        let exit_cfg  = &state.config.strategy.exit;
-        let days_held = (Utc::now() - meta.opened_at).num_days();
-        let dte       = dte_from_occ_symbol(&ap.symbol).unwrap_or(99);
+        let exit_cfg   = &state.config.strategy.exit;
+        let held       = Utc::now() - meta.opened_at;
+        let hours_held = held.num_minutes() as f64 / 60.0;
+        let days_held  = held.num_days();
+        let dte        = dte_from_occ_symbol(&ap.symbol).unwrap_or(99);
 
         // ── EMA50 break check (cached per underlying per cycle) ───────────────
         let ema50_broken = {
@@ -104,13 +124,20 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             && pnl_pct <= peak_pnl - exit_cfg.trailing_trail_gap_pct;
 
         // ── Exit priority order ───────────────────────────────────────────────
-        let exit_reason: Option<&str> = if pnl_pct <= -(exit_cfg.stop_loss_pct) {
+        // Emergency stop bypasses min_hold_hours — a -50% loss is always closed.
+        let is_emergency   = pnl_pct <= -(exit_cfg.emergency_stop_pct);
+        let hold_gate_open = hours_held >= exit_cfg.min_hold_hours || is_emergency;
+
+        let exit_reason: Option<&str> = if is_emergency {
+            Some("emergency_stop")
+        } else if pnl_pct <= -(exit_cfg.stop_loss_pct) && hold_gate_open {
             Some("stop_loss")
         } else if dte <= exit_cfg.theta_exit_dte && pnl_pct < exit_cfg.theta_exit_min_pnl_pct {
             Some("theta_exit")
         } else if trailing_triggered {
             Some("trailing_profit")
-        } else if ema50_broken {
+        } else if ema50_broken && market_open {
+            // EMA50 break only fires during market hours — prevents midnight stale-price exits
             Some("ema50_break")
         } else if dte <= exit_cfg.time_exit_dte {
             Some("time_exit")
@@ -127,9 +154,18 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             None    => continue,
         };
 
+        // Do not submit orders outside market hours (prices are stale).
+        if !market_open {
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "exit monitor: {} would exit ({}) but market is closed — queuing for open",
+                ap.symbol, exit_reason,
+            )));
+            continue;
+        }
+
         let _ = state.log_tx.send(LogEvent::info(format!(
-            "exit monitor: {} → {} (pnl={:.1}% peak={:.1}% dte={} days_held={})",
-            ap.symbol, exit_reason, pnl_pct, peak_pnl, dte, days_held,
+            "exit monitor: {} → {} (pnl={:.1}% peak={:.1}% held={:.1}h dte={})",
+            ap.symbol, exit_reason, pnl_pct, peak_pnl, hours_held, dte,
         )));
 
         // ── PDT gate ──────────────────────────────────────────────────────────
