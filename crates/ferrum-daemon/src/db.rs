@@ -1,0 +1,292 @@
+use chrono::{DateTime, Utc};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+use std::path::PathBuf;
+use ferrum_core::{error::FerrumError, types::FillRecord};
+use crate::pdt::DayTradeRecord;
+
+#[derive(Debug, Clone)]
+pub struct Database {
+    pub pool: SqlitePool,
+}
+
+impl Database {
+    pub async fn open() -> Result<Self, FerrumError> {
+        let data_dir = data_dir();
+        std::fs::create_dir_all(&data_dir)?;
+        let db_path = data_dir.join("ferrum.db");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new().max_connections(5).connect(&url).await?;
+        Ok(Self { pool })
+    }
+
+    pub async fn migrate(&self) -> Result<(), FerrumError> {
+        // Core tables
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS fills (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol    TEXT    NOT NULL,
+                side      TEXT    NOT NULL,
+                qty       REAL    NOT NULL,
+                price     REAL    NOT NULL,
+                timestamp TEXT    NOT NULL,
+                order_id  TEXT    NOT NULL UNIQUE
+            )"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS log_events (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT    NOT NULL,
+                level     TEXT    NOT NULL,
+                message   TEXT    NOT NULL
+            )"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS sessions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode       TEXT    NOT NULL,
+                started_at TEXT    NOT NULL,
+                stopped_at TEXT
+            )"
+        ).execute(&self.pool).await?;
+
+        // Strategy-specific tables
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS day_trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_symbol TEXT    NOT NULL,
+                underlying      TEXT    NOT NULL,
+                open_time       TEXT    NOT NULL,
+                close_time      TEXT    NOT NULL,
+                open_price      REAL    NOT NULL,
+                close_price     REAL    NOT NULL,
+                pnl             REAL    NOT NULL,
+                was_emergency   INTEGER DEFAULT 0
+            )"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS iv_snapshots (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol                 TEXT    NOT NULL,
+                timestamp              TEXT    NOT NULL,
+                implied_volatility     REAL,
+                historical_volatility  REAL,
+                iv_rank                REAL,
+                UNIQUE(symbol, timestamp)
+            )"
+        ).execute(&self.pool).await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS trade_log (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_symbol  TEXT    NOT NULL,
+                underlying       TEXT    NOT NULL,
+                direction        TEXT    NOT NULL,
+                action           TEXT    NOT NULL,
+                timestamp        TEXT    NOT NULL,
+                price            REAL    NOT NULL,
+                quantity         INTEGER NOT NULL,
+                confluence_score INTEGER,
+                regime           TEXT,
+                iv_rank          REAL,
+                delta            REAL,
+                dte              INTEGER,
+                exit_reason      TEXT,
+                pnl              REAL
+            )"
+        ).execute(&self.pool).await?;
+
+        Ok(())
+    }
+
+    // ── Fills ─────────────────────────────────────────────────────────────────
+
+    pub async fn upsert_fill(&self, fill: &FillRecord) -> Result<(), FerrumError> {
+        sqlx::query(
+            "INSERT INTO fills (symbol, side, qty, price, timestamp, order_id)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(order_id) DO UPDATE SET qty = excluded.qty, price = excluded.price",
+        )
+        .bind(&fill.symbol).bind(&fill.side).bind(fill.qty).bind(fill.price)
+        .bind(fill.timestamp.to_rfc3339()).bind(&fill.order_id)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn recent_fills(&self, limit: i64) -> Result<Vec<FillRecord>, FerrumError> {
+        let rows = sqlx::query(
+            "SELECT id, symbol, side, qty, price, timestamp, order_id
+             FROM fills ORDER BY timestamp DESC LIMIT ?",
+        ).bind(limit).fetch_all(&self.pool).await?;
+
+        rows.into_iter().map(|r| {
+            let ts: String = r.get("timestamp");
+            Ok(FillRecord {
+                id:        Some(r.get("id")),
+                symbol:    r.get("symbol"),
+                side:      r.get("side"),
+                qty:       r.get("qty"),
+                price:     r.get("price"),
+                timestamp: ts.parse::<DateTime<Utc>>()
+                    .map_err(|e| FerrumError::Config(e.to_string()))?,
+                order_id:  r.get("order_id"),
+            })
+        }).collect()
+    }
+
+    // ── Log events ────────────────────────────────────────────────────────────
+
+    pub async fn insert_log(&self, ts: &str, level: &str, msg: &str) -> Result<(), FerrumError> {
+        sqlx::query("INSERT INTO log_events (timestamp, level, message) VALUES (?, ?, ?)")
+            .bind(ts).bind(level).bind(msg)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    // ── Sessions ──────────────────────────────────────────────────────────────
+
+    pub async fn start_session(&self, mode: &str) -> Result<i64, FerrumError> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO sessions (mode, started_at) VALUES (?, ?) RETURNING id"
+        ).bind(mode).bind(&now).fetch_one(&self.pool).await?;
+        Ok(row.get("id"))
+    }
+
+    pub async fn stop_session(&self, id: i64) -> Result<(), FerrumError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("UPDATE sessions SET stopped_at = ? WHERE id = ?")
+            .bind(&now).bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    // ── Day trades (PDT tracker) ──────────────────────────────────────────────
+
+    pub async fn insert_day_trade(&self, trade: &DayTradeRecord) -> Result<(), FerrumError> {
+        sqlx::query(
+            "INSERT INTO day_trades
+             (contract_symbol, underlying, open_time, close_time, open_price, close_price, pnl, was_emergency)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&trade.contract_symbol)
+        .bind(&trade.underlying)
+        .bind(trade.open_time.to_rfc3339())
+        .bind(trade.close_time.to_rfc3339())
+        .bind(trade.open_price)
+        .bind(trade.close_price)
+        .bind(trade.pnl)
+        .bind(trade.was_emergency as i32)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn recent_day_trades(&self, lookback_days: i64) -> Result<Vec<DayTradeRecord>, FerrumError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(lookback_days)).to_rfc3339();
+        let rows = sqlx::query(
+            "SELECT contract_symbol, underlying, open_time, close_time,
+                    open_price, close_price, pnl, was_emergency
+             FROM day_trades WHERE close_time >= ? ORDER BY close_time DESC",
+        ).bind(&cutoff).fetch_all(&self.pool).await?;
+
+        rows.into_iter().map(|r| {
+            let ot: String = r.get("open_time");
+            let ct: String = r.get("close_time");
+            Ok(DayTradeRecord {
+                contract_symbol: r.get("contract_symbol"),
+                underlying:      r.get("underlying"),
+                open_time:       ot.parse().map_err(|e| FerrumError::Config(format!("{e}")))?,
+                close_time:      ct.parse().map_err(|e| FerrumError::Config(format!("{e}")))?,
+                open_price:      r.get("open_price"),
+                close_price:     r.get("close_price"),
+                pnl:             r.get("pnl"),
+                was_emergency:   r.get::<i32, _>("was_emergency") != 0,
+            })
+        }).collect()
+    }
+
+    /// Day trades in the current rolling 5-day window.
+    pub async fn day_trade_count_in_window(&self, window_days: i64) -> Result<u32, FerrumError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(window_days)).to_rfc3339();
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM day_trades WHERE close_time >= ?")
+            .bind(&cutoff).fetch_one(&self.pool).await?;
+        Ok(row.get::<i64, _>("cnt") as u32)
+    }
+
+    // ── IV snapshots ──────────────────────────────────────────────────────────
+
+    pub async fn upsert_iv_snapshot(
+        &self,
+        symbol: &str,
+        iv: f64,
+        hv: f64,
+        iv_rank: f64,
+    ) -> Result<(), FerrumError> {
+        let date = Utc::now().format("%Y-%m-%d").to_string();
+        sqlx::query(
+            "INSERT INTO iv_snapshots (symbol, timestamp, implied_volatility, historical_volatility, iv_rank)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(symbol, timestamp) DO UPDATE SET
+                 implied_volatility    = excluded.implied_volatility,
+                 historical_volatility = excluded.historical_volatility,
+                 iv_rank               = excluded.iv_rank",
+        )
+        .bind(symbol).bind(&date).bind(iv).bind(hv).bind(iv_rank)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn count_iv_snapshots(&self, symbol: &str) -> Result<i64, FerrumError> {
+        let row = sqlx::query("SELECT COUNT(*) as cnt FROM iv_snapshots WHERE symbol = ?")
+            .bind(symbol).fetch_one(&self.pool).await?;
+        Ok(row.get("cnt"))
+    }
+
+    pub async fn iv_range_52w(&self, symbol: &str) -> Result<(f64, f64), FerrumError> {
+        let cutoff = (Utc::now() - chrono::Duration::days(365)).to_rfc3339();
+        let row = sqlx::query(
+            "SELECT MIN(implied_volatility) as low, MAX(implied_volatility) as high
+             FROM iv_snapshots WHERE symbol = ? AND timestamp >= ?",
+        ).bind(symbol).bind(&cutoff).fetch_one(&self.pool).await?;
+        Ok((row.get::<f64, _>("low"), row.get::<f64, _>("high")))
+    }
+
+    // ── Trade log ─────────────────────────────────────────────────────────────
+
+    pub async fn insert_trade_log(
+        &self,
+        contract_symbol: &str,
+        underlying:      &str,
+        direction:       &str,
+        action:          &str,
+        price:           f64,
+        quantity:        i64,
+        confluence_score: Option<i64>,
+        regime:          Option<&str>,
+        iv_rank:         Option<f64>,
+        delta:           Option<f64>,
+        dte:             Option<i64>,
+        exit_reason:     Option<&str>,
+        pnl:             Option<f64>,
+    ) -> Result<(), FerrumError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO trade_log
+             (contract_symbol, underlying, direction, action, timestamp, price, quantity,
+              confluence_score, regime, iv_rank, delta, dte, exit_reason, pnl)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(contract_symbol).bind(underlying).bind(direction).bind(action)
+        .bind(&now).bind(price).bind(quantity)
+        .bind(confluence_score).bind(regime).bind(iv_rank).bind(delta)
+        .bind(dte).bind(exit_reason).bind(pnl)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+}
+
+fn data_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".local").join("share").join("ferrum")
+}

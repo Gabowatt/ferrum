@@ -1,0 +1,17 @@
+[package]
+name    = "ferrum-export"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ferrum-export"
+path = "src/main.rs"
+
+[dependencies]
+ferrum-core = { path = "../ferrum-core" }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+chrono      = { workspace = true }
+clap        = { workspace = true }
