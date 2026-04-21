@@ -69,13 +69,14 @@ ferrum/
 │   └── ferrum-export/      # tax/CSV export tooling
 └── docs/
     ├── ferrum-build-plan.md              # phase-by-phase build plan
-    ├── ferrum-iron-conduit-strategy.md   # full strategy specification (v2.1)
-    └── week-1-report-2026-04-11.md       # paper trading week 1 debrief
+    ├── ferrum-iron-conduit-strategy.md   # full strategy specification (v2.2)
+    ├── week-1-report-2026-04-11.md       # paper trading week 1 debrief
+    └── week-2-report-2026-04-20.md       # paper trading week 2 debrief + V1 sign-off
 ```
 
 The build plan and strategy doc in `docs/` are the authoritative references. Each Claude Code session starts by reading the relevant doc alongside `git log --oneline -10` and `TODO.md`.
 
-## Strategy: Multi-Regime Iron Condor v2.1
+## Strategy: Multi-Regime Iron Condor v2.2
 
 > Full specification: [`docs/ferrum-iron-conduit-strategy.md`](docs/ferrum-iron-conduit-strategy.md)
 
@@ -109,7 +110,7 @@ STAGE 3: QUALITY SCORING (regime-specific signal set)
 
 | Regime | Min score | Sizing (score → factor) |
 |---|---|---|
-| Trending Up / Down | 7/12 | 7–8 → 0.5×  ·  9–10 → 0.75×  ·  11–12 → 1.0× |
+| Trending Up / Down | 6/12 | 6–8 → 0.5×  ·  9–10 → 0.75×  ·  11–12 → 1.0× |
 | Range-Bound | 6/10 | 6 → 0.5×  ·  7–8 → 0.75×  ·  9–10 → 1.0× |
 | Choppy (if enabled) | 8/10 | always 0.5× |
 
@@ -138,8 +139,10 @@ Cash account, max **2 day trades per rolling 5-day window**. Same-day exits only
 | Tier | Symbols | Condition |
 |---|---|---|
 | 1 | SPY, QQQ, IWM | Always scan |
-| 2 | F, SOFI, PLTR, NIO, RIVN, HOOD, SNAP, AAL, CLF, T, PFE, BAC, UBER, LYFT, FCX, SIRI | Always scan |
+| 2 | F, SOFI, NIO, RIVN, HOOD, SNAP, AAL, CLF, T, BAC, UBER, LYFT, FCX, SIRI | Always scan |
 | 3 | AAPL, COIN | Only when IV rank ≥ 40 |
+
+PFE and PLTR were dropped after week 2 (range_bound averages 0.8 and 0.31 — never produced a usable signal in their non-choppy regime).
 
 ### Target performance
 

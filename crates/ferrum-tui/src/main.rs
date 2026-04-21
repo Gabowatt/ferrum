@@ -41,14 +41,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
     }
 
     // Stagger initial polls so they don't all fire at once on startup.
+    // Alpaca Algo Trader Plus: 10k req/min — safe to poll TUI panels aggressively.
     let now = std::time::Instant::now();
-    let mut last_clock_poll     = now - Duration::from_secs(61);   // fire immediately
-    let mut last_log_poll       = now - Duration::from_secs(3);    // fire immediately
-    // Rate-limited to protect free-tier API limits (200 req/min).
-    // Remove the long intervals once upgraded to Alpaca Plus.
-    let mut last_pnl_poll       = now - Duration::from_secs(121);  // fire immediately, then every 2 min
-    let mut last_positions_poll = now - Duration::from_secs(31);   // fire immediately, then every 30s
-    let mut last_fills_poll     = now - Duration::from_secs(31);   // fire immediately, then every 30s
+    let mut last_clock_poll     = now - Duration::from_secs(61);
+    let mut last_log_poll       = now - Duration::from_secs(3);
+    let mut last_pnl_poll       = now - Duration::from_secs(31);   // every 30s
+    let mut last_positions_poll = now - Duration::from_secs(11);   // every 10s
+    let mut last_fills_poll     = now - Duration::from_secs(11);   // every 10s
 
     loop {
         if let Some(ref mut client) = ipc {
@@ -65,15 +64,15 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
             }
 
             if let Some(ref mut client) = ipc {
-                // Fills: DB read — every 30s
-                if last_fills_poll.elapsed() >= Duration::from_secs(30) {
+                // Fills: DB read — every 10s
+                if last_fills_poll.elapsed() >= Duration::from_secs(10) {
                     if let Ok(IpcResponse::Fills { fills }) = client.request_fills().await {
                         app.fills = fills;
                     }
                     last_fills_poll = std::time::Instant::now();
                 }
-                // PnL: 2 Alpaca API calls — every 2 min (free tier guard)
-                if last_pnl_poll.elapsed() >= Duration::from_secs(120) {
+                // PnL: 2 Alpaca API calls — every 30s
+                if last_pnl_poll.elapsed() >= Duration::from_secs(30) {
                     if let Ok(IpcResponse::Pnl { today, month, year }) = client.request_pnl("1M").await {
                         app.pnl_today = today;
                         app.pnl_month = month;
@@ -81,8 +80,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> 
                     }
                     last_pnl_poll = std::time::Instant::now();
                 }
-                // Positions: 1 Alpaca API call — every 30s
-                if last_positions_poll.elapsed() >= Duration::from_secs(30) {
+                // Positions: 1 Alpaca API call — every 10s
+                if last_positions_poll.elapsed() >= Duration::from_secs(10) {
                     if let Ok(positions) = client.request_positions().await {
                         app.positions = positions;
                     }

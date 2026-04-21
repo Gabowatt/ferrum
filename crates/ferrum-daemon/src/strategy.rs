@@ -234,7 +234,8 @@ struct AlpacaActivity {
 }
 
 pub async fn fill_sync_task(state: Arc<AppState>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    // Alpaca Algo Trader Plus: 10k req/min. Fast fill sync keeps trade_log fresh.
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
         interval.tick().await;
         match sync_fills(&state).await {

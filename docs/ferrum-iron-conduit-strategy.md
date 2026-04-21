@@ -1,6 +1,6 @@
 # Ferrum Trading Strategy: Iron Conduit
 
-> **Version:** 2.1  
+> **Version:** 2.2  
 > **Codename:** `iron-conduit`  
 > **Account Size:** $1,000  
 > **Account Type:** Cash (avoids margin requirements, simplifies PDT handling)  
@@ -8,6 +8,17 @@
 > **Asset Class:** US equity & ETF options (American-style)
 
 ## Changelog
+
+### v2.2 (post Week 2 paper trading review — 2026-04-20)
+Week 2 ran with the v2.1 vetoes in place. Results were profitable (+$78 realized over 5 sessions) but the entry rate dropped to **0.34%** (23 entries / 6,856 scans) — well under the v2.1 prediction of 3–8% and below the level needed to compound the account meaningfully.
+
+The single biggest leak was the **trend score floor of 7**. The best trending symbol of the week (HOOD trending_down) averaged 6.16 — close, but never crossed. The whole bucket of trending_up signals on IWM/QQQ/SPY landed in the 4–6 range. Lowering the trend floor to **6/12** restores the option of taking modest-strength trend setups while keeping the regime gate strict.
+
+Symbol pruning: PFE (range_bound avg 0.8) and PLTR (range_bound avg 0.31) never produced a usable signal in their non-choppy regime. Removed.
+
+API rate limits: account upgraded to Alpaca Algo Trader Plus (10k req/min). Per-symbol scan throttle removed (`market_data_cooldown = 0`); TUI poll intervals dropped accordingly.
+
+Sections updated: §3 (sizing/threshold table), §5 (Stage 3 thresholds), §13 (config reference). All other v2.1 logic (vetoes, regime gate, regime-specific signal sets, exit ladder) unchanged.
 
 ### v2.1 (post Week 1 paper trading review)
 Week 1 surfaced three structural problems that the v2.0 confluence design didn't anticipate:
@@ -405,7 +416,7 @@ Score determines two things: whether to enter, and how big.
 
 | Regime | Min score | Sizing tiers (score → size factor) |
 |--------|-----------|-----------------------------------|
-| TrendUp / TrendDown | 7/12 | 7-8: 0.5×  •  9-10: 0.75×  •  11-12: 1.0× |
+| TrendUp / TrendDown | 6/12 | 6-8: 0.5×  •  9-10: 0.75×  •  11-12: 1.0× |
 | RangeBound | 6/10 | 6: 0.5×  •  7-8: 0.75×  •  9-10: 1.0× |
 | Choppy (if enabled) | 8/10 | 8-10: 0.5× (always half) |
 

@@ -109,25 +109,40 @@
 - [x] Removed old ferrum-iron-conduit-strategy.md (v2.0); renamed _v2.md → ferrum-iron-conduit-strategy.md (v2.1 is now canonical)
 - [x] Updated README with v2.1 strategy summary: three-stage gate, regime table, entry thresholds, exit priority table
 
-## Next session — resume here
+## Completed this session (V1 sign-off + v2.2 — 2026-04-20)
 
-### Priority 1 — Post-Alpaca Plus (once upgrade completes)
-- [ ] Drop TUI polling intervals (pnl: 30s, positions: 10s, fills: 10s)
-- [ ] Set market_data_cooldown = 0 in config.toml
-- [ ] Investigate SPY/QQQ/IWM/F/BAC chain data gaps (currently no_contracts on free indicative feed)
+- [x] Week 2 data analysis: 6,856 scans, 23 entries (0.34%), realized **+$78** (LYFT +$127, SOFI −$42, SIRI −$7)
+- [x] v2.2 strategy tuning: `trend_min_score` 7 → 6 (HOOD trending_down avg 6.16 was the most-missed setup)
+- [x] Symbol pruning: removed PFE (range avg 0.8) and PLTR (range avg 0.31)
+- [x] Strategy doc bumped to v2.2 with week-2 changelog entry
+- [x] README updated: symbol universe, threshold table, file list
+- [x] Week 2 report written: `docs/week-2-report-2026-04-20.md`
+- [x] Alpaca Algo Trader Plus rate-limit profile applied:
+    - `market_data_cooldown` 4s → 0s
+    - TUI poll intervals: positions/fills 30s → 10s, PnL 120s → 30s
+    - Daemon `fill_sync_task` 60s → 15s
+    - Stripped legacy free-tier comments
+- [x] V1 merged to main
 
-### Priority 2 — watch week 2 paper trading data
-- Query scan_results: which symbols consistently score ≥ threshold under v2.1
-- Which outcome dominates: below_threshold / no_contracts / choppy / extreme_proximity / entered
-- Expect entry rate to drop from 27% → 3-8% with v2.1 vetoes
+## Next session — V2 starting points
 
-### Priority 3 — Sector concentration tracking
+### Priority 1 — Sector concentration tracking
 `RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
 - Add sector map to config or hard-code in risk.rs
 - Block entry if open positions in same sector >= max_sector_positions
 
-### Priority 4 — TUI polish (when ready)
+### Priority 2 — Investigate chain data gaps
+SPY/QQQ/IWM/F/BAC still showed some `no_contracts` outcomes in week 2 even on Plus.
+Confirm whether the upgrade has fully propagated and whether the `indicative` feed flag should change.
+
+### Priority 3 — TUI polish
 - `[B]` buying power panel — free cash + used margin
+- Per-position score/regime tags (we record them on entry — surface them in the positions panel)
+
+### Priority 4 — V2 architecture (per `docs/ferrum-build-plan.md`)
+- Axum HTTP layer in front of the daemon IPC
+- Remote/web client
+- Multi-leg condor support (real iron condors, not single-leg long puts/calls)
 
 ## To run
 
