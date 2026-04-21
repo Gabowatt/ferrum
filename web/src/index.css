@@ -164,7 +164,7 @@ body {
   font-size: 18px;
   font-weight: 800;
   letter-spacing: 0.08em;
-  background: linear-gradient(90deg, var(--tn-cyan) 0%, var(--tn-blue) 100%);
+  background: linear-gradient(90deg, var(--tn-cyan) 0%, var(--tn-purple) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -270,9 +270,9 @@ body {
 }
 
 .mode-chip--paper {
-  background: rgba(122, 162, 247, 0.12);
-  border-color: rgba(122, 162, 247, 0.35);
-  color: var(--tn-blue);
+  background: rgba(125, 207, 255, 0.1);
+  border-color: rgba(125, 207, 255, 0.3);
+  color: var(--tn-cyan);
 }
 
 .mode-chip--live {
@@ -656,7 +656,7 @@ body {
 .chart-tooltip__value {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--tn-blue);
+  color: var(--tn-purple);
   font-weight: 700;
 }
 
@@ -730,8 +730,8 @@ body {
 }
 
 .log-level--order {
-  background: rgba(122, 162, 247, 0.12);
-  color: var(--tn-blue);
+  background: rgba(187, 154, 247, 0.12);
+  color: var(--tn-purple);
 }
 
 .log-level--risk {

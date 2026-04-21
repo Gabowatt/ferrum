@@ -121,32 +121,24 @@ export function PnlPanel({ pnl, equity }: PnlPanelProps) {
             >
               <defs>
                 <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="5%"
-                    stopColor="#7aa2f7"
-                    stopOpacity={0.35}
-                  />
-                  <stop
-                    offset="95%"
-                    stopColor="#7aa2f7"
-                    stopOpacity={0.02}
-                  />
+                  <stop offset="5%"  stopColor="#bb9af7" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#bb9af7" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
               <CartesianGrid
                 strokeDasharray="3 3"
-                stroke="rgba(65,72,104,0.4)"
+                stroke="rgba(46,46,46,0.8)"
                 vertical={false}
               />
               <XAxis
                 dataKey="date"
-                tick={{ fill: "#565f89", fontSize: 9 }}
+                tick={{ fill: "#555555", fontSize: 9 }}
                 axisLine={false}
                 tickLine={false}
                 interval="preserveStartEnd"
               />
               <YAxis
-                tick={{ fill: "#565f89", fontSize: 9 }}
+                tick={{ fill: "#555555", fontSize: 9 }}
                 axisLine={false}
                 tickLine={false}
                 width={55}
@@ -160,11 +152,11 @@ export function PnlPanel({ pnl, equity }: PnlPanelProps) {
               <Area
                 type="monotone"
                 dataKey="equity"
-                stroke="#7aa2f7"
+                stroke="#bb9af7"
                 strokeWidth={1.5}
                 fill="url(#equityGrad)"
                 dot={false}
-                activeDot={{ r: 4, fill: "#7aa2f7", strokeWidth: 0 }}
+                activeDot={{ r: 4, fill: "#bb9af7", strokeWidth: 0 }}
               />
             </AreaChart>
           </ResponsiveContainer>
