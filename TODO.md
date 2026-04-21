@@ -147,6 +147,11 @@
 - [x] GitHub Actions workflow: `.github/workflows/deploy.yml` — builds and deploys to Pages on push to main
 - [x] README updated with new quickstart, dev mode, live trading instructions
 
+## 🐛 Active bugs (fix next)
+
+- [ ] **Stop button doesn't work** — clicking Stop in the web UI has no effect; investigate whether the daemon's `Stop` IPC handler transitions status back to Idle after the strategy loop exits, and whether the UI re-polls status correctly after the call
+- [ ] **Market close indicator** — fixed in UI (was parsing `"closes 16:00"` as ISO date → NaN); now displays `clock.next_change` directly; verify on next run
+
 ## Next session — V2 starting points
 
 ### Priority 1 — Web app (replaces TUI) ✅ DONE

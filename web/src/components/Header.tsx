@@ -16,20 +16,6 @@ interface HeaderProps {
   onModeChange: () => Promise<void>;
 }
 
-function formatNextChange(iso: string): string {
-  try {
-    const next = new Date(iso);
-    const now = new Date();
-    const diffMs = next.getTime() - now.getTime();
-    if (diffMs <= 0) return "soon";
-    const diffH = Math.floor(diffMs / 3_600_000);
-    const diffM = Math.floor((diffMs % 3_600_000) / 60_000);
-    if (diffH > 0) return `${diffH}h ${diffM}m`;
-    return `${diffM}m`;
-  } catch {
-    return "—";
-  }
-}
 
 function ModeDialog({
   current,
@@ -201,7 +187,7 @@ export function Header({
                 {clock.is_open ? "NYSE OPEN" : "NYSE CLOSED"}
               </span>
               <span className="market-status__next">
-                · closes in {formatNextChange(clock.next_change)}
+                · {clock.next_change}
               </span>
             </div>
           )}

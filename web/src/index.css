@@ -1,12 +1,15 @@
-/* ── Tokyo Night CSS variables ─────────────────────────────────────── */
+/* ── Tokyo Night accents on Claude Code-style dark backgrounds ──────── */
 :root {
-  --tn-bg:      #1a1b26;
-  --tn-bg1:     #24283b;
-  --tn-bg2:     #292e42;
-  --tn-border:  #414868;
-  --tn-comment: #565f89;
+  /* Backgrounds: pure dark grays (no blue tint) */
+  --tn-bg:      #0f0f0f;
+  --tn-bg1:     #1a1a1a;
+  --tn-bg2:     #222222;
+  --tn-border:  #2e2e2e;
+  --tn-comment: #555555;
+  /* Foreground: keep Tokyo Night's soft lavender-white */
   --tn-fg:      #c0caf5;
   --tn-fg-dim:  #a9b1d6;
+  /* Accents: full Tokyo Night palette unchanged */
   --tn-cyan:    #7dcfff;
   --tn-blue:    #7aa2f7;
   --tn-green:   #9ece6a;
