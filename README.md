@@ -62,10 +62,13 @@ Quant-level options trading bot + TUI, powered by Alpaca Trading.
 ferrum/
 ├── Cargo.toml              # workspace root
 ├── config.toml             # gitignored — your local keys + params
+├── web/                    # React + Vite frontend (Tokyo Night theme)
+│   ├── src/
+│   └── dist/               # built output served by ferrum-web
 ├── crates/
 │   ├── ferrum-core/        # shared types, traits, indicators, errors
 │   ├── ferrum-daemon/      # core background service
-│   ├── ferrum-tui/         # ratatui frontend
+│   ├── ferrum-web/         # Axum HTTP server + SSE (replaces TUI)
 │   └── ferrum-export/      # tax/CSV export tooling
 └── docs/
     ├── ferrum-build-plan.md              # phase-by-phase build plan
@@ -151,18 +154,47 @@ PFE and PLTR were dropped after week 2 (range_bound averages 0.8 and 0.31 — ne
 
 ## Quickstart
 
-1. Create `config.toml` with your Alpaca paper keys (see `docs/ferrum-iron-conduit-strategy.md` §13 for the full config reference).
-2. Run the daemon:
+1. Create `config.toml` with your Alpaca keys (see `docs/ferrum-iron-conduit-strategy.md` §13 for the full config reference).
+2. Build the web app once:
+   ```bash
+   cd web && npm install && npm run build && cd ..
    ```
+3. Run the daemon:
+   ```bash
    cargo run -p ferrum-daemon
    ```
-3. Run the TUI in a second terminal:
+4. Run the web server in a second terminal:
+   ```bash
+   cargo run -p ferrum-web
    ```
-   cargo run -p ferrum-tui
-   ```
+5. Open **http://localhost:3000** in your browser.
 
-The daemon runs independently — closing the TUI does not stop it. `Ctrl-C` the daemon to shut it down cleanly.
+The daemon runs independently — closing the browser or the web server does not stop it. `Ctrl-C` the daemon to shut it down cleanly.
 
-## Safety
+### Development mode (hot-reload)
 
-Live trading is **disabled** in V1. The daemon will refuse to start in live mode regardless of config.
+```bash
+# Terminal 1 — daemon
+cargo run -p ferrum-daemon
+
+# Terminal 2 — Axum API server (API only, no static serving)
+cargo run -p ferrum-web
+
+# Terminal 3 — Vite dev server (hot-reload, proxies /api → localhost:3000)
+cd web && npm run dev
+```
+
+Then open **http://localhost:5173**.
+
+### GitHub Pages
+
+The web app is auto-deployed to GitHub Pages on every push to `main` via `.github/workflows/deploy.yml`. The hosted app connects to `http://localhost:3000` by default — modern browsers allow HTTPS pages to call HTTP localhost.
+
+## Live trading
+
+To enable live mode:
+1. Set `enabled = true` under `[alpaca.live]` in `config.toml` and add your live API keys.
+2. Use the **PAPER → LIVE** toggle in the web UI (writes `mode = "live"` to `config.toml`).
+3. Restart the daemon.
+
+Live trading is gated behind `enabled = true` — the daemon refuses to start in live mode without it.

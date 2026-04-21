@@ -69,13 +69,9 @@ async fn main() -> Result<(), FerrumError> {
     let config = AppConfig::load(&cfg_path)?;
     info!("Loaded config from {cfg_path}");
 
-    // Live trading gate
-    if config.alpaca.mode == Mode::Live {
-        if !config.alpaca.live.enabled {
-            error!("Live trading is disabled in V1.");
-            return Err(FerrumError::LiveTradingDisabled);
-        }
-        error!("Live trading attempted — refusing in V1.");
+    // Live trading gate — require explicit opt-in via config
+    if config.alpaca.mode == Mode::Live && !config.alpaca.live.enabled {
+        error!("Live mode set but live.enabled = false in config. Set enabled = true to permit live trading.");
         return Err(FerrumError::LiveTradingDisabled);
     }
     info!("Mode: {}", config.alpaca.mode);

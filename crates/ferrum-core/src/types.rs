@@ -90,6 +90,7 @@ pub enum IpcCommand {
     Stop,
     ToggleMode { mode: String },
     GetPnl { period: String },
+    GetEquityHistory { period: String },
     GetFills,
     GetPositions,
     GetPdt,
@@ -129,6 +130,10 @@ pub enum IpcResponse {
     },
     Logs {
         events: Vec<LogEvent>,
+    },
+    EquityHistory {
+        timestamps: Vec<i64>,   // unix milliseconds
+        equity:     Vec<f64>,
     },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),

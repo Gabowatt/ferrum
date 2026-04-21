@@ -106,13 +106,16 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
         }
 
         IpcCommand::ToggleMode { mode } => {
-            if mode != "paper" {
-                warn!("Live mode toggle attempted — refused in V1");
-                return IpcResponse::Error {
-                    message: "live trading is disabled in V1".into(),
-                };
+            let cfg_path = std::env::var("FERRUM_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+            match toggle_mode_in_config(&cfg_path, &mode) {
+                Ok(()) => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!(
+                        "mode set to {mode} in {cfg_path} — restart daemon to apply"
+                    )));
+                    IpcResponse::Ok
+                }
+                Err(e) => IpcResponse::Error { message: format!("config write failed: {e}") },
             }
-            IpcResponse::Ok
         }
 
         IpcCommand::GetPnl { period } => {
@@ -155,6 +158,13 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
             match state.db.recent_logs(limit as i64).await {
                 Ok(events) => IpcResponse::Logs { events },
                 Err(e)     => IpcResponse::Error { message: e.to_string() },
+            }
+        }
+
+        IpcCommand::GetEquityHistory { period } => {
+            match fetch_equity_history(&state.client, &period).await {
+                Ok(resp) => resp,
+                Err(e)   => IpcResponse::Error { message: e.to_string() },
             }
         }
     }
@@ -295,6 +305,46 @@ fn parse_clock_time(ts: &str) -> Option<String> {
     use chrono::{DateTime, Local};
     let dt = DateTime::parse_from_rfc3339(ts).ok()?;
     Some(dt.with_timezone(&Local).format("%H:%M").to_string())
+}
+
+async fn fetch_equity_history(
+    client: &ferrum_core::client::AlpacaClient,
+    period: &str,
+) -> Result<IpcResponse, ferrum_core::error::FerrumError> {
+    let data: serde_json::Value = client
+        .get_with_query(
+            "/v2/account/portfolio/history",
+            &[("period", period), ("timeframe", "1D")],
+        )
+        .await?;
+
+    let timestamps: Vec<i64> = data["timestamp"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64().map(|t| t * 1000)).collect())
+        .unwrap_or_default();
+
+    let equity: Vec<f64> = data["equity"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect())
+        .unwrap_or_default();
+
+    Ok(IpcResponse::EquityHistory { timestamps, equity })
+}
+
+fn toggle_mode_in_config(path: &str, mode: &str) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let updated = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("mode") && line.contains('=') {
+                format!("mode = \"{}\"", mode)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(path, updated + "\n")
 }
 
 fn json_line(resp: &IpcResponse) -> String {

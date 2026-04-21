@@ -124,25 +124,53 @@
     - Stripped legacy free-tier comments
 - [x] V1 merged to main
 
+## Completed this session (V2 web app — 2026-04-21)
+
+- [x] Removed ferrum-tui crate entirely (ratatui/crossterm deps dropped from workspace)
+- [x] Created ferrum-web crate — Axum HTTP server on port 3000
+  - All IPC commands forwarded via REST (status, pnl, positions, fills, pdt, clock, logs, equity)
+  - SSE `/api/stream` endpoint — polls daemon every 2s, broadcasts new LogEvents to clients
+  - `POST /api/mode` — writes mode to config.toml, returns restart_required: true
+  - Serves built React files from `web/dist/` via ServeDir
+  - CORS permissive — allows GitHub Pages origin
+- [x] Created `web/` — React 18 + TypeScript + Vite dashboard
+  - Tokyo Night dark theme (CSS variables, all custom CSS — no UI libraries)
+  - Header: gradient logo, pulsing status dot, mode chip, market status, PDT counter
+  - Positions panel: CALL/PUT badges, P&L bar (green/red gradient, ±50% cap)
+  - P&L panel: today/month/year stat cards + Recharts equity area chart
+  - Fills panel: recent fills with BUY/SELL badges, time-ago
+  - Log stream: SSE live logs, level-colored badges, auto-scroll (500-entry ring buffer)
+  - Mode switch: Paper↔Live toggle with confirm dialog + restart-required banner
+  - Controls: Start/Stop in header
+- [x] Updated daemon: removed V1 live-trading hard block; ToggleMode writes config.toml
+- [x] Added `GetEquityHistory` IPC command + daemon handler (Alpaca portfolio history)
+- [x] GitHub Actions workflow: `.github/workflows/deploy.yml` — builds and deploys to Pages on push to main
+- [x] README updated with new quickstart, dev mode, live trading instructions
+
 ## Next session — V2 starting points
 
-### Priority 1 — Sector concentration tracking
+### Priority 1 — Web app (replaces TUI) ✅ DONE
+TUI is being scrapped. Replace with a web-based client:
+- Axum HTTP layer in front of the daemon IPC (replaces unix socket as the external interface)
+- Web frontend: real-time positions, PnL, bot status, log stream, start/stop controls
+- ferrum-tui crate stays in workspace but is no longer the primary UI
+- Design decision pending: SSE/WebSocket for live data push vs polling
+
+### Priority 2 — Sector concentration tracking
 `RiskGuard::check_entry` has `max_sector_positions` but sector lookup is not wired:
 - Add sector map to config or hard-code in risk.rs
 - Block entry if open positions in same sector >= max_sector_positions
 
-### Priority 2 — Investigate chain data gaps
+### Priority 3 — Investigate chain data gaps
 SPY/QQQ/IWM/F/BAC still showed some `no_contracts` outcomes in week 2 even on Plus.
 Confirm whether the upgrade has fully propagated and whether the `indicative` feed flag should change.
 
-### Priority 3 — TUI polish
-- `[B]` buying power panel — free cash + used margin
-- Per-position score/regime tags (we record them on entry — surface them in the positions panel)
-
-### Priority 4 — V2 architecture (per `docs/ferrum-build-plan.md`)
-- Axum HTTP layer in front of the daemon IPC
-- Remote/web client
-- Multi-leg condor support (real iron condors, not single-leg long puts/calls)
+### Priority 4 — True multi-leg iron condors
+Replace single-leg directional long puts/calls with real iron condors:
+- Short call spread + short put spread (4 legs per position)
+- Net credit strategy — collect premium, profit if price stays in range
+- Requires margin or defined-risk spread approval on Alpaca
+- Update chain selection, sizing, exit logic, and P&L tracking accordingly
 
 ## To run
 

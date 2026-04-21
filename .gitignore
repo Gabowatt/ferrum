@@ -5,3 +5,7 @@ config.toml
 *.db
 *.db-shm
 *.db-wal
+
+# Web app
+web/node_modules/
+web/dist/
