@@ -62,6 +62,10 @@ pub struct SymbolsConfig {
     pub tier2:             Vec<String>,
     pub tier3:             Vec<String>,
     pub tier3_iv_rank_min: f64,
+    /// Sector mapping: symbol → sector name. Symbols not listed are treated as
+    /// sector "unclassified" and only count against themselves.
+    #[serde(default)]
+    pub sectors:           std::collections::HashMap<String, String>,
 }
 
 impl SymbolsConfig {
@@ -81,6 +85,12 @@ impl SymbolsConfig {
         if self.tier3.iter().any(|s| s == symbol) { return Some(3); }
         None
     }
+
+    /// Returns the sector for a symbol, falling back to the symbol itself so
+    /// unclassified underlyings still count against their own limit.
+    pub fn sector_of<'a>(&'a self, symbol: &'a str) -> &'a str {
+        self.sectors.get(symbol).map(|s| s.as_str()).unwrap_or(symbol)
+    }
 }
 
 // ── Liquidity filters ─────────────────────────────────────────────────────────
@@ -98,7 +108,6 @@ pub struct LiquidityConfig {
 pub struct StrategyConfig {
     pub name:                  String,
     pub scan_interval_secs:    u64,
-    pub chain_scan_interval:   u64,
     pub exit_check_interval:   u64,
     pub scan_start_time:       String, // "HH:MM" ET
     pub scan_end_time:         String, // "HH:MM" ET
@@ -130,9 +139,6 @@ pub struct EntryConfig {
     pub bb_width_min_pct:            f64,
     /// Number of bars to look back for EMA20 slope calculation.
     pub ema_slope_lookback_bars:     usize,
-    // ── Legacy single threshold (kept for fallback logging) ──────────────────
-    #[serde(default = "default_min_score")]
-    pub min_confluence_score:        u32,
     // ── Contract filters (unchanged) ─────────────────────────────────────────
     pub preferred_delta:             f64,
     pub delta_min:                   f64,
@@ -143,8 +149,6 @@ pub struct EntryConfig {
     pub limit_price_method:          String,
 }
 
-fn default_min_score() -> u32 { 7 }
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExitConfig {
     // ── Trailing profit target ────────────────────────────────────────────────
@@ -153,9 +157,6 @@ pub struct ExitConfig {
     /// Close if current P&L falls this many points below the observed peak P&L.
     /// E.g. peak=35%, gap=7% → close trigger at 28%.
     pub trailing_trail_gap_pct:   f64,
-    // ── Legacy fixed targets (kept for reference; trailing takes precedence) ──
-    pub profit_target_partial_pct: f64,
-    pub profit_target_full_pct:    f64,
     // ── Other exits ───────────────────────────────────────────────────────────
     /// Stop-loss will not fire until position has been held this many hours.
     /// Emergency stop (loss >= emergency_stop_pct) bypasses this gate.

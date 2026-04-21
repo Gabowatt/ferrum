@@ -22,7 +22,6 @@ use crate::{
 
 #[async_trait::async_trait]
 pub trait Strategy: Send + Sync {
-    fn name(&self) -> &str;
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError>;
 }
 
@@ -32,7 +31,6 @@ pub trait Strategy: Send + Sync {
 struct AlpacaClock {
     is_open:    bool,
     next_open:  Option<String>,
-    next_close: Option<String>,
 }
 
 /// Returns true if the market is open AND the current ET time is within the
@@ -105,7 +103,7 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
 
         // Market hours gate
         if !market_is_open(&state).await {
-            sleep(entry_interval).await;
+            interruptible_sleep(&state, entry_interval).await;
             continue;
         }
 
@@ -117,9 +115,16 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             }
             Ok(signals) => {
                 for signal in signals {
-                    // Build real risk guard with live position count
-                    let pos_count = state.open_positions.lock().await.len() as u32;
-                    let guard = RiskGuard::new(&state.config, pos_count, 0.0, 1000.0, 0.0);
+                    // Build real risk guard with live position count + sector map.
+                    let (pos_count, open_underlyings) = {
+                        let positions = state.open_positions.lock().await;
+                        let underlyings: Vec<String> = positions.values()
+                            .map(|m| m.underlying.clone())
+                            .collect();
+                        (positions.len() as u32, underlyings)
+                    };
+                    let guard = RiskGuard::new(&state.config, pos_count, 0.0, 1000.0, 0.0)
+                        .with_open_underlyings(&open_underlyings);
                     match guard.check_entry(&signal) {
                         Ok(()) => {
                             let _ = state.log_tx.send(LogEvent::risk("risk guard passed"));
@@ -145,7 +150,16 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             }
         }
 
-        sleep(entry_interval).await;
+        interruptible_sleep(&state, entry_interval).await;
+    }
+}
+
+/// Sleep until either `dur` elapses or a Stop is requested via `state.stop_notify`.
+/// Lets the Stop button take effect immediately instead of waiting out the scan interval.
+async fn interruptible_sleep(state: &AppState, dur: Duration) {
+    tokio::select! {
+        _ = sleep(dur) => {}
+        _ = state.stop_notify.notified() => {}
     }
 }
 
@@ -305,18 +319,16 @@ struct ContractsResponse {
 #[derive(Debug, Deserialize)]
 struct OptionContract {
     symbol:          String,
-    #[serde(rename = "type")]
-    contract_type:   String,
     expiration_date: String,           // "YYYY-MM-DD"
     open_interest:   Option<String>,   // API returns string e.g. "17"
     tradable:        bool,
 }
 
 impl OptionContract {
-    fn open_interest_f64(&self) -> f64 {
-        self.open_interest.as_deref()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.0)
+    /// Parsed open_interest, or None if Alpaca didn't return a value (early in
+    /// the session this can be missing for otherwise-liquid strikes).
+    fn open_interest_opt(&self) -> Option<f64> {
+        self.open_interest.as_deref().and_then(|s| s.parse().ok())
     }
 }
 
@@ -429,8 +441,6 @@ impl IronConduitStrategy {
 
 #[async_trait::async_trait]
 impl Strategy for IronConduitStrategy {
-    fn name(&self) -> &str { "iron-conduit" }
-
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;
@@ -619,12 +629,18 @@ impl Strategy for IronConduitStrategy {
                 }
             };
 
-            // Pre-filter by tradable + DTE + open interest
+            // Pre-filter by tradable + DTE + open interest.
+            // OI missing from Alpaca (None) is treated as "unknown — allow" so
+            // otherwise-liquid strikes aren't silently dropped early in the session;
+            // the bid/ask spread check in Step 2 is the real liquidity gate.
             let today = Utc::now().date_naive();
+            let total_returned = contracts_resp.option_contracts.len();
             let filtered_contracts: Vec<&OptionContract> = contracts_resp.option_contracts.iter()
                 .filter(|c| {
                     if !c.tradable { return false; }
-                    if c.open_interest_f64() < liq.min_open_interest as f64 { return false; }
+                    if let Some(oi) = c.open_interest_opt() {
+                        if oi < liq.min_open_interest as f64 { return false; }
+                    }
                     if let Ok(exp) = chrono::NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
                         let dte = (exp - today).num_days();
                         dte >= entry.dte_min as i64 && dte <= entry.dte_max as i64
@@ -636,7 +652,9 @@ impl Strategy for IronConduitStrategy {
 
             if filtered_contracts.is_empty() {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter",
+                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter \
+                     ({total_returned} returned by Alpaca, DTE {}-{}, OI≥{})",
+                    entry.dte_min, entry.dte_max, liq.min_open_interest,
                 )));
                 let _ = state.db.insert_scan_result(
                     symbol, &snap.regime.to_string(), score as i32,
@@ -666,9 +684,11 @@ impl Strategy for IronConduitStrategy {
                 }
             };
 
-            // Build a lookup from contract symbol → open_interest for scoring
+            // Build a lookup from contract symbol → open_interest for scoring.
+            // Unknown OI (Alpaca returned null) → 0.0 here; scoring just uses
+            // it as a tie-breaker so a 0 is fine.
             let oi_map: std::collections::HashMap<&str, f64> = filtered_contracts.iter()
-                .map(|c| (c.symbol.as_str(), c.open_interest_f64()))
+                .map(|c| (c.symbol.as_str(), c.open_interest_opt().unwrap_or(0.0)))
                 .collect();
 
             // Collect and rank qualifying contracts
@@ -699,9 +719,7 @@ impl Strategy for IronConduitStrategy {
                 let iv_result = iv_engine
                     .compute(symbol, current_iv, &closes, &state.db)
                     .await
-                    .unwrap_or_else(|_| crate::iv_rank::IvRankResult {
-                        iv_rank: 50.0, current_iv, method: crate::iv_rank::IvMethod::HvProxy,
-                    });
+                    .unwrap_or_else(|_| crate::iv_rank::IvRankResult { iv_rank: 50.0 });
 
                 if cfg.symbols.tier_of(symbol) == Some(3)
                     && iv_result.iv_rank < cfg.symbols.tier3_iv_rank_min

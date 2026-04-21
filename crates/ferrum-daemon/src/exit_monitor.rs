@@ -18,7 +18,6 @@ use crate::{orders, AppState};
 pub struct AlpacaPosition {
     pub symbol:          String,
     pub qty:             String,
-    pub unrealized_pl:   String,
     pub unrealized_plpc: String,
     pub current_price:   String,
     pub cost_basis:      String,
@@ -70,7 +69,6 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
 
     for ap in &alpaca_positions {
         let qty: f64            = ap.qty.parse().unwrap_or(0.0);
-        let unrealized_pl: f64  = ap.unrealized_pl.parse().unwrap_or(0.0);
         let unrealized_plpc: f64 = ap.unrealized_plpc.parse().unwrap_or(0.0);
         let current_price: f64  = ap.current_price.parse().unwrap_or(0.0);
         let cost_basis: f64     = ap.cost_basis.parse().unwrap_or(0.0);

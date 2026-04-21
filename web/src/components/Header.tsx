@@ -137,6 +137,12 @@ export function Header({
     try {
       await api.stop();
       await onStatusChange();
+      // Poll status every 1s for up to 10s so the UI picks up the Running → Stopping → Idle
+      // transition promptly instead of waiting for the 5s polling interval.
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        await onStatusChange();
+      }
     } finally {
       setActionLoading(false);
     }

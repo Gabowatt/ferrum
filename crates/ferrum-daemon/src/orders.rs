@@ -16,9 +16,6 @@ pub struct AlpacaOrderRequest {
 pub struct AlpacaOrder {
     pub id:               String,
     pub status:           String,
-    pub symbol:           String,
-    pub qty:              String,
-    pub side:             String,
     pub filled_qty:       String,
     pub filled_avg_price: Option<String>,
 }
@@ -52,16 +49,4 @@ pub async fn get_order(
 /// Fetch all open orders.
 pub async fn get_open_orders(client: &AlpacaClient) -> Result<Vec<AlpacaOrder>, FerrumError> {
     client.get_with_query("/v2/orders", &[("status", "open"), ("limit", "100")]).await
-}
-
-pub async fn cancel_order(
-    client: &AlpacaClient,
-    order_id: &str,
-) -> Result<(), FerrumError> {
-    // DELETE /v2/orders/{order_id} — returns 204
-    let _: serde_json::Value = client
-        .delete(&format!("/v2/orders/{order_id}"))
-        .await
-        .unwrap_or(serde_json::Value::Null);
-    Ok(())
 }

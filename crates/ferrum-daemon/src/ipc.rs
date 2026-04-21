@@ -4,7 +4,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
     signal,
 };
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use serde::Deserialize;
 
 use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position};
@@ -101,6 +101,8 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message: "not running".into() };
             }
             *s = BotStatus::Stopping;
+            drop(s);
+            state.stop_notify.notify_waiters();
             let _ = state.log_tx.send(LogEvent::warn("strategy loop stopping"));
             IpcResponse::Ok
         }

@@ -186,10 +186,6 @@ cd web && npm run dev
 
 Then open **http://localhost:5173**.
 
-### GitHub Pages
-
-The web app is auto-deployed to GitHub Pages on every push to `main` via `.github/workflows/deploy.yml`. The hosted app connects to `http://localhost:3000` by default — modern browsers allow HTTPS pages to call HTTP localhost.
-
 ## Live trading
 
 To enable live mode:

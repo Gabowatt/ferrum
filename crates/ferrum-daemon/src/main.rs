@@ -9,7 +9,7 @@ mod risk;
 mod strategy;
 
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tracing::{error, info};
 
 use ferrum_core::{
@@ -54,6 +54,8 @@ pub struct AppState {
     pub open_positions: Mutex<std::collections::HashMap<String, OpenPositionMeta>>,
     /// Timestamp of the last position close for each underlying — used for cooldown veto.
     pub last_close_by_underlying: Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// Pinged when the user requests Stop so the strategy loop can interrupt its sleep.
+    pub stop_notify: Arc<Notify>,
 }
 
 #[tokio::main]
@@ -112,6 +114,7 @@ async fn main() -> Result<(), FerrumError> {
         pdt:            Mutex::new(pdt_tracker),
         open_positions: Mutex::new(std::collections::HashMap::new()),
         last_close_by_underlying: Mutex::new(std::collections::HashMap::new()),
+        stop_notify:    Arc::new(Notify::new()),
     });
 
     // Persist log events to SQLite — subscribe before the first send.
