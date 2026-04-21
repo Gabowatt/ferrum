@@ -720,8 +720,8 @@ body {
 }
 
 .log-level--info {
-  background: rgba(86, 95, 137, 0.2);
-  color: var(--tn-comment);
+  background: rgba(169, 177, 214, 0.1);
+  color: var(--tn-fg-dim);
 }
 
 .log-level--signal {
