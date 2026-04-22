@@ -14,17 +14,7 @@ pub struct IvRankEngine {
 
 #[derive(Debug, Clone)]
 pub struct IvRankResult {
-    pub iv_rank:    f64,  // 0–100
-    pub current_iv: f64,  // raw IV from snapshot
-    pub method:     IvMethod,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IvMethod {
-    /// Using HV as proxy (< 30 snapshots stored)
-    HvProxy,
-    /// Using actual stored IV snapshots
-    ActualIv,
+    pub iv_rank: f64,  // 0–100
 }
 
 impl IvRankEngine {
@@ -52,11 +42,7 @@ impl IvRankEngine {
             let (iv_low, iv_high) = db.iv_range_52w(symbol).await?;
             if iv_high > iv_low {
                 let rank = (current_iv - iv_low) / (iv_high - iv_low) * 100.0;
-                return Ok(IvRankResult {
-                    iv_rank:    rank.clamp(0.0, 100.0),
-                    current_iv,
-                    method:     IvMethod::ActualIv,
-                });
+                return Ok(IvRankResult { iv_rank: rank.clamp(0.0, 100.0) });
             }
         }
 
@@ -64,7 +50,7 @@ impl IvRankEngine {
         let hv = historical_volatility(closes, self.hv_lookback_days as usize);
         if hv.is_nan() || closes.len() < 60 {
             // Not enough data — return neutral rank (50)
-            return Ok(IvRankResult { iv_rank: 50.0, current_iv, method: IvMethod::HvProxy });
+            return Ok(IvRankResult { iv_rank: 50.0 });
         }
 
         // Use close-based rolling window for HV high/low as proxy for IV range
@@ -77,7 +63,7 @@ impl IvRankEngine {
         }
 
         if hv_vals.is_empty() {
-            return Ok(IvRankResult { iv_rank: 50.0, current_iv, method: IvMethod::HvProxy });
+            return Ok(IvRankResult { iv_rank: 50.0 });
         }
 
         let hv_low  = hv_vals.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -89,7 +75,7 @@ impl IvRankEngine {
             50.0
         };
 
-        Ok(IvRankResult { iv_rank: rank, current_iv, method: IvMethod::HvProxy })
+        Ok(IvRankResult { iv_rank: rank })
     }
 
     /// Returns the size adjustment factor based on IV rank.

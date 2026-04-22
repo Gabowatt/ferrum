@@ -4,7 +4,7 @@ use tokio::{
     net::{UnixListener, UnixStream},
     signal,
 };
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use serde::Deserialize;
 
 use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position};
@@ -101,18 +101,23 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 return IpcResponse::Error { message: "not running".into() };
             }
             *s = BotStatus::Stopping;
+            drop(s);
+            state.stop_notify.notify_waiters();
             let _ = state.log_tx.send(LogEvent::warn("strategy loop stopping"));
             IpcResponse::Ok
         }
 
         IpcCommand::ToggleMode { mode } => {
-            if mode != "paper" {
-                warn!("Live mode toggle attempted — refused in V1");
-                return IpcResponse::Error {
-                    message: "live trading is disabled in V1".into(),
-                };
+            let cfg_path = std::env::var("FERRUM_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+            match toggle_mode_in_config(&cfg_path, &mode) {
+                Ok(()) => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!(
+                        "mode set to {mode} in {cfg_path} — restart daemon to apply"
+                    )));
+                    IpcResponse::Ok
+                }
+                Err(e) => IpcResponse::Error { message: format!("config write failed: {e}") },
             }
-            IpcResponse::Ok
         }
 
         IpcCommand::GetPnl { period } => {
@@ -146,6 +151,20 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
 
         IpcCommand::GetMarketClock => {
             match fetch_market_clock(&state.client).await {
+                Ok(resp) => resp,
+                Err(e)   => IpcResponse::Error { message: e.to_string() },
+            }
+        }
+
+        IpcCommand::GetLogs { limit } => {
+            match state.db.recent_logs(limit as i64).await {
+                Ok(events) => IpcResponse::Logs { events },
+                Err(e)     => IpcResponse::Error { message: e.to_string() },
+            }
+        }
+
+        IpcCommand::GetEquityHistory { period } => {
+            match fetch_equity_history(&state.client, &period).await {
                 Ok(resp) => resp,
                 Err(e)   => IpcResponse::Error { message: e.to_string() },
             }
@@ -209,19 +228,50 @@ async fn fetch_positions(state: &AppState) -> Result<Vec<Position>, ferrum_core:
 
 async fn fetch_pnl(
     client: &ferrum_core::client::AlpacaClient,
-    period: &str,
+    _period: &str,
 ) -> Result<IpcResponse, ferrum_core::error::FerrumError> {
-    let data: serde_json::Value = client
-        .get_with_query("/v2/account/portfolio/history", &[("period", period), ("timeframe", "1D")])
+    // One month of daily history: equity[-1] - equity[-2] = today, profit_loss[-1] = month total.
+    let month_data: serde_json::Value = client
+        .get_with_query("/v2/account/portfolio/history", &[("period", "1M"), ("timeframe", "1D")])
         .await?;
 
-    let profit_loss = data["profit_loss"].as_array().and_then(|v| v.last()).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let equity_arr = month_data["equity"].as_array();
+    let pl_arr     = month_data["profit_loss"].as_array();
 
-    Ok(IpcResponse::Pnl {
-        today: profit_loss,
-        month: 0.0, // TODO: derive from history array
-        year:  0.0,
-    })
+    // Today = last day's equity minus previous day's equity.
+    let today = equity_arr.and_then(|arr| {
+        let n = arr.len();
+        if n >= 2 {
+            let last = arr[n - 1].as_f64()?;
+            let prev = arr[n - 2].as_f64()?;
+            Some(last - prev)
+        } else {
+            None
+        }
+    }).unwrap_or(0.0);
+
+    // Month = cumulative profit_loss since start of the 1M window.
+    let month = pl_arr
+        .and_then(|arr| arr.last())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // Year = cumulative profit_loss over 1A window (best-effort, falls back to 0).
+    let year = match client
+        .get_with_query::<serde_json::Value>(
+            "/v2/account/portfolio/history",
+            &[("period", "1A"), ("timeframe", "1D")],
+        )
+        .await
+    {
+        Ok(year_data) => year_data["profit_loss"].as_array()
+            .and_then(|arr| arr.last())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        Err(_) => 0.0,
+    };
+
+    Ok(IpcResponse::Pnl { today, month, year })
 }
 
 // ── Market clock helper ────────────────────────────────────────────────────────
@@ -257,6 +307,46 @@ fn parse_clock_time(ts: &str) -> Option<String> {
     use chrono::{DateTime, Local};
     let dt = DateTime::parse_from_rfc3339(ts).ok()?;
     Some(dt.with_timezone(&Local).format("%H:%M").to_string())
+}
+
+async fn fetch_equity_history(
+    client: &ferrum_core::client::AlpacaClient,
+    period: &str,
+) -> Result<IpcResponse, ferrum_core::error::FerrumError> {
+    let data: serde_json::Value = client
+        .get_with_query(
+            "/v2/account/portfolio/history",
+            &[("period", period), ("timeframe", "1D")],
+        )
+        .await?;
+
+    let timestamps: Vec<i64> = data["timestamp"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64().map(|t| t * 1000)).collect())
+        .unwrap_or_default();
+
+    let equity: Vec<f64> = data["equity"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_f64()).collect())
+        .unwrap_or_default();
+
+    Ok(IpcResponse::EquityHistory { timestamps, equity })
+}
+
+fn toggle_mode_in_config(path: &str, mode: &str) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    let updated = content
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("mode") && line.contains('=') {
+                format!("mode = \"{}\"", mode)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(path, updated + "\n")
 }
 
 fn json_line(resp: &IpcResponse) -> String {

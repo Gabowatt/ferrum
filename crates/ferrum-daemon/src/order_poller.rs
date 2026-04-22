@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::warn;
 use chrono::Utc;
 
 use ferrum_core::types::LogEvent;
@@ -67,11 +66,11 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             state.open_positions.lock().await.remove(&contract);
                         }
                         other => {
-                            warn!("order {entry_id} for {contract} has unexpected status: {other}");
+                            let _ = state.log_tx.send(LogEvent::warn(format!("order {entry_id} for {contract} has unexpected status: {other}")));
                         }
                     },
                     Err(e) => {
-                        warn!("could not fetch entry order {entry_id}: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("could not fetch entry order {entry_id}: {e}")));
                     }
                 }
             }
@@ -113,11 +112,15 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             ).await;
 
                             // Record day trade if applicable
-                            let is_day_trade = {
+                            let (is_day_trade, emergency_stop_pct) = {
                                 let pdt = state.pdt.lock().await;
-                                pdt.would_be_day_trade(meta.opened_at)
+                                (pdt.would_be_day_trade(meta.opened_at),
+                                 pdt.emergency_stop_pct)
                             };
                             if is_day_trade {
+                                let pnl_pct = if meta.entry_price > 0.0 {
+                                    (close_price - meta.entry_price) / meta.entry_price * 100.0
+                                } else { 0.0 };
                                 let dt_record = DayTradeRecord {
                                     contract_symbol: contract.clone(),
                                     underlying:      meta.underlying.clone(),
@@ -126,7 +129,7 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                                     open_price:      meta.entry_price,
                                     close_price,
                                     pnl,
-                                    was_emergency:   false,
+                                    was_emergency:   pnl_pct <= -emergency_stop_pct,
                                 };
                                 let _ = state.db.insert_day_trade(&dt_record).await;
                                 let mut pdt = state.pdt.lock().await;
@@ -134,6 +137,10 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             }
 
                             state.open_positions.lock().await.remove(&contract);
+
+                            // Record close timestamp for entry cooldown veto
+                            state.last_close_by_underlying.lock().await
+                                .insert(meta.underlying.clone(), Utc::now());
                         }
                         "canceled" | "expired" => {
                             let _ = state.log_tx.send(LogEvent::warn(format!(
@@ -147,11 +154,11 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             }
                         }
                         other => {
-                            warn!("close order {close_id} for {contract}: unexpected status {other}");
+                            let _ = state.log_tx.send(LogEvent::warn(format!("close order {close_id} for {contract}: unexpected status {other}")));
                         }
                     },
                     Err(e) => {
-                        warn!("could not fetch close order {close_id}: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("could not fetch close order {close_id}: {e}")));
                     }
                 }
             }

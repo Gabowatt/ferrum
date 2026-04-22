@@ -2,6 +2,8 @@ use reqwest::{Client, header};
 use serde::de::DeserializeOwned;
 use crate::{config::AppConfig, error::FerrumError};
 
+const DATA_URL: &str = "https://data.alpaca.markets";
+
 /// Thin wrapper around reqwest that handles Alpaca auth headers and base URL switching.
 #[derive(Debug, Clone)]
 pub struct AlpacaClient {
@@ -64,6 +66,31 @@ impl AlpacaClient {
         params: &[(&str, &str)],
     ) -> Result<T, FerrumError> {
         let url = format!("{}{}", self.base_url, path);
+        let resp = self.http
+            .get(&url)
+            .header("APCA-API-KEY-ID", &self.key)
+            .header("APCA-API-SECRET-KEY", &self.secret)
+            .query(params)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(FerrumError::Alpaca(format!("{status}: {body}")));
+        }
+
+        Ok(resp.json::<T>().await?)
+    }
+
+    /// GET with query parameters against the market data API (data.alpaca.markets).
+    /// Use this for all /v2/stocks/* and /v2/snapshots/* endpoints.
+    pub async fn get_data_with_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<T, FerrumError> {
+        let url = format!("{DATA_URL}{path}");
         let resp = self.http
             .get(&url)
             .header("APCA-API-KEY-ID", &self.key)

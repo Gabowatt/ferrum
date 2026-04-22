@@ -9,7 +9,7 @@ mod risk;
 mod strategy;
 
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tracing::{error, info};
 
 use ferrum_core::{
@@ -38,6 +38,9 @@ pub struct OpenPositionMeta {
     /// Order ID of a pending close order (set when exit monitor submits close).
     pub pending_close_order_id: Option<String>,
     pub force_exit_next_open:  bool,
+    /// Highest unrealized P&L % seen since entry — used for trailing profit target.
+    /// Initialized to f64::NEG_INFINITY; updated each exit-monitor cycle.
+    pub peak_pnl_pct:          f64,
 }
 
 #[derive(Debug)]
@@ -49,6 +52,10 @@ pub struct AppState {
     pub db:             db::Database,
     pub pdt:            Mutex<pdt::PdtTracker>,
     pub open_positions: Mutex<std::collections::HashMap<String, OpenPositionMeta>>,
+    /// Timestamp of the last position close for each underlying — used for cooldown veto.
+    pub last_close_by_underlying: Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
+    /// Pinged when the user requests Stop so the strategy loop can interrupt its sleep.
+    pub stop_notify: Arc<Notify>,
 }
 
 #[tokio::main]
@@ -64,13 +71,9 @@ async fn main() -> Result<(), FerrumError> {
     let config = AppConfig::load(&cfg_path)?;
     info!("Loaded config from {cfg_path}");
 
-    // Live trading gate
-    if config.alpaca.mode == Mode::Live {
-        if !config.alpaca.live.enabled {
-            error!("Live trading is disabled in V1.");
-            return Err(FerrumError::LiveTradingDisabled);
-        }
-        error!("Live trading attempted — refusing in V1.");
+    // Live trading gate — require explicit opt-in via config
+    if config.alpaca.mode == Mode::Live && !config.alpaca.live.enabled {
+        error!("Live mode set but live.enabled = false in config. Set enabled = true to permit live trading.");
         return Err(FerrumError::LiveTradingDisabled);
     }
     info!("Mode: {}", config.alpaca.mode);
@@ -110,12 +113,24 @@ async fn main() -> Result<(), FerrumError> {
         db,
         pdt:            Mutex::new(pdt_tracker),
         open_positions: Mutex::new(std::collections::HashMap::new()),
+        last_close_by_underlying: Mutex::new(std::collections::HashMap::new()),
+        stop_notify:    Arc::new(Notify::new()),
     });
 
-    let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
+    // Persist log events to SQLite — subscribe before the first send.
+    {
+        let mut log_rx = log_tx.subscribe();
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            while let Ok(ev) = log_rx.recv().await {
+                let ts = ev.timestamp.to_rfc3339();
+                let lv = ev.level.to_string();
+                let _ = db.insert_log(&ts, &lv, &ev.message).await;
+            }
+        });
+    }
 
-    // Fill sync background task
-    tokio::spawn(strategy::fill_sync_task(state.clone()));
+    let _ = log_tx.send(LogEvent::info("ferrum daemon started"));
 
     info!("Starting IPC server on /tmp/ferrum.sock");
     ipc::run_server(state.clone()).await?;

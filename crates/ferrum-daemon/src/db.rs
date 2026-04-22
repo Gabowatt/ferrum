@@ -5,6 +5,16 @@ use ferrum_core::{error::FerrumError, types::FillRecord};
 use crate::pdt::DayTradeRecord;
 
 #[derive(Debug, Clone)]
+pub struct ScanResult {
+    pub timestamp: String,
+    pub symbol:    String,
+    pub regime:    String,
+    pub score:     i32,
+    pub direction: Option<String>,
+    pub outcome:   String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Database {
     pub pool: SqlitePool,
 }
@@ -98,6 +108,20 @@ impl Database {
             )"
         ).execute(&self.pool).await?;
 
+        // Per-symbol scan results — every symbol scored each cycle is recorded.
+        // Useful for diagnosing how close/far the bot is from generating a buy signal.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS scan_results (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT    NOT NULL,
+                symbol    TEXT    NOT NULL,
+                regime    TEXT    NOT NULL,
+                score     INTEGER NOT NULL,
+                direction TEXT,
+                outcome   TEXT    NOT NULL
+            )"
+        ).execute(&self.pool).await?;
+
         Ok(())
     }
 
@@ -143,6 +167,33 @@ impl Database {
             .bind(ts).bind(level).bind(msg)
             .execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn recent_logs(&self, limit: i64) -> Result<Vec<ferrum_core::types::LogEvent>, FerrumError> {
+        use ferrum_core::types::{LogEvent, LogLevel};
+        let rows = sqlx::query(
+            "SELECT timestamp, level, message FROM log_events ORDER BY id DESC LIMIT ?"
+        ).bind(limit).fetch_all(&self.pool).await?;
+
+        let mut events: Vec<LogEvent> = rows.iter().map(|r| {
+            let ts: String  = r.try_get("timestamp").unwrap_or_default();
+            let lv: String  = r.try_get("level").unwrap_or_default();
+            let msg: String = r.try_get("message").unwrap_or_default();
+            let timestamp = DateTime::parse_from_rfc3339(&ts)
+                .map(|t| t.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let level = match lv.as_str() {
+                "SIGNAL" => LogLevel::Signal,
+                "ORDER"  => LogLevel::Order,
+                "RISK"   => LogLevel::Risk,
+                "ERROR"  => LogLevel::Error,
+                "WARN"   => LogLevel::Warn,
+                _        => LogLevel::Info,
+            };
+            LogEvent { timestamp, level, message: msg }
+        }).collect();
+        events.reverse(); // oldest first
+        Ok(events)
     }
 
     // ── Sessions ──────────────────────────────────────────────────────────────
@@ -250,6 +301,45 @@ impl Database {
              FROM iv_snapshots WHERE symbol = ? AND timestamp >= ?",
         ).bind(symbol).bind(&cutoff).fetch_one(&self.pool).await?;
         Ok((row.get::<f64, _>("low"), row.get::<f64, _>("high")))
+    }
+
+    // ── Scan results ──────────────────────────────────────────────────────────
+
+    /// Record a per-symbol scan result so we can track scoring trends over time.
+    /// outcome: "entered" | "below_threshold" | "no_contracts" | "risk_blocked" | "choppy"
+    pub async fn insert_scan_result(
+        &self,
+        symbol:    &str,
+        regime:    &str,
+        score:     i32,
+        direction: Option<&str>,
+        outcome:   &str,
+    ) -> Result<(), FerrumError> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO scan_results (timestamp, symbol, regime, score, direction, outcome)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&now).bind(symbol).bind(regime).bind(score).bind(direction).bind(outcome)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Most-recent scan results per symbol (latest N rows total, newest first).
+    pub async fn recent_scan_results(&self, limit: i64) -> Result<Vec<ScanResult>, FerrumError> {
+        let rows = sqlx::query(
+            "SELECT timestamp, symbol, regime, score, direction, outcome
+             FROM scan_results ORDER BY id DESC LIMIT ?",
+        ).bind(limit).fetch_all(&self.pool).await?;
+
+        Ok(rows.iter().map(|r| ScanResult {
+            timestamp: r.try_get::<String, _>("timestamp").unwrap_or_default(),
+            symbol:    r.try_get("symbol").unwrap_or_default(),
+            regime:    r.try_get("regime").unwrap_or_default(),
+            score:     r.try_get("score").unwrap_or(0),
+            direction: r.try_get("direction").ok(),
+            outcome:   r.try_get("outcome").unwrap_or_default(),
+        }).collect())
     }
 
     // ── Trade log ─────────────────────────────────────────────────────────────

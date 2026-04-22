@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::error;
 use serde::Deserialize;
-use chrono::{Timelike, Utc};
+use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     client::AlpacaClient,
     error::FerrumError,
-    indicators::{self, TradeDirection},
+    indicators::{self, BarContext, TradeDirection},
     types::{BotStatus, FillRecord, LegAction, LogEvent, OptionLeg, OrderType, Signal},
 };
 use crate::{
@@ -22,7 +22,6 @@ use crate::{
 
 #[async_trait::async_trait]
 pub trait Strategy: Send + Sync {
-    fn name(&self) -> &str;
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError>;
 }
 
@@ -32,7 +31,6 @@ pub trait Strategy: Send + Sync {
 struct AlpacaClock {
     is_open:    bool,
     next_open:  Option<String>,
-    next_close: Option<String>,
 }
 
 /// Returns true if the market is open AND the current ET time is within the
@@ -54,11 +52,11 @@ async fn market_is_open(state: &AppState) -> bool {
         return false;
     }
 
-    // Check configured ET scan window using UTC time offset (-5 or -4 for EDT)
-    // We parse HH:MM from scan_start_time / scan_end_time and compare against
-    // current UTC time shifted by -5 (ET, approximate).
-    let et_offset_hours: i64 = -5; // EST; -4 for EDT (conservative)
+    // Check configured ET scan window using UTC time offset.
+    // EDT (UTC-4) Mar–Nov, EST (UTC-5) Nov–Mar.
     let now_utc = Utc::now();
+    let month = now_utc.month();
+    let et_offset_hours: i64 = if month >= 3 && month <= 11 { -4 } else { -5 };
     let et_hour = (now_utc.hour() as i64 + et_offset_hours).rem_euclid(24) as u32;
     let et_min  = now_utc.minute();
     let et_mins = et_hour * 60 + et_min;
@@ -105,7 +103,7 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
 
         // Market hours gate
         if !market_is_open(&state).await {
-            sleep(entry_interval).await;
+            interruptible_sleep(&state, entry_interval).await;
             continue;
         }
 
@@ -117,9 +115,16 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             }
             Ok(signals) => {
                 for signal in signals {
-                    // Build real risk guard with live position count
-                    let pos_count = state.open_positions.lock().await.len() as u32;
-                    let guard = RiskGuard::new(&state.config, pos_count, 0.0, 1000.0, 0.0);
+                    // Build real risk guard with live position count + sector map.
+                    let (pos_count, open_underlyings) = {
+                        let positions = state.open_positions.lock().await;
+                        let underlyings: Vec<String> = positions.values()
+                            .map(|m| m.underlying.clone())
+                            .collect();
+                        (positions.len() as u32, underlyings)
+                    };
+                    let guard = RiskGuard::new(&state.config, pos_count, 0.0, 1000.0, 0.0)
+                        .with_open_underlyings(&open_underlyings);
                     match guard.check_entry(&signal) {
                         Ok(()) => {
                             let _ = state.log_tx.send(LogEvent::risk("risk guard passed"));
@@ -145,7 +150,16 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             }
         }
 
-        sleep(entry_interval).await;
+        interruptible_sleep(&state, entry_interval).await;
+    }
+}
+
+/// Sleep until either `dur` elapses or a Stop is requested via `state.stop_notify`.
+/// Lets the Stop button take effect immediately instead of waiting out the scan interval.
+async fn interruptible_sleep(state: &AppState, dur: Duration) {
+    tokio::select! {
+        _ = sleep(dur) => {}
+        _ = state.stop_notify.notified() => {}
     }
 }
 
@@ -206,6 +220,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
                     pending_order_id:           Some(order.id),
                     pending_close_order_id:     None,
                     force_exit_next_open:       false,
+                    peak_pnl_pct:              f64::NEG_INFINITY,
                 };
                 state.open_positions.lock().await.insert(leg.contract.clone(), meta);
             }
@@ -233,7 +248,8 @@ struct AlpacaActivity {
 }
 
 pub async fn fill_sync_task(state: Arc<AppState>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    // Alpaca Algo Trader Plus: 10k req/min. Fast fill sync keeps trade_log fresh.
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
         interval.tick().await;
         match sync_fills(&state).await {
@@ -292,6 +308,31 @@ struct Bar {
     #[serde(rename = "vw")] vwap:   Option<f64>,
 }
 
+// ── Options API response types ────────────────────────────────────────────────
+
+/// Response from GET /v2/options/contracts (Trading API)
+#[derive(Debug, Deserialize)]
+struct ContractsResponse {
+    option_contracts: Vec<OptionContract>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OptionContract {
+    symbol:          String,
+    expiration_date: String,           // "YYYY-MM-DD"
+    open_interest:   Option<String>,   // API returns string e.g. "17"
+    tradable:        bool,
+}
+
+impl OptionContract {
+    /// Parsed open_interest, or None if Alpaca didn't return a value (early in
+    /// the session this can be missing for otherwise-liquid strikes).
+    fn open_interest_opt(&self) -> Option<f64> {
+        self.open_interest.as_deref().and_then(|s| s.parse().ok())
+    }
+}
+
+/// Response from GET /v1beta1/options/snapshots (Data API)
 #[derive(Debug, Deserialize)]
 struct OptionsSnapshotResponse {
     snapshots: std::collections::HashMap<String, OptionSnapshot>,
@@ -299,14 +340,11 @@ struct OptionsSnapshotResponse {
 
 #[derive(Debug, Deserialize)]
 struct OptionSnapshot {
-    #[serde(rename = "greeks")]
-    greeks: Option<Greeks>,
+    greeks:                  Option<Greeks>,
     #[serde(rename = "impliedVolatility")]
-    iv:     Option<f64>,
+    iv:                      Option<f64>,
     #[serde(rename = "latestQuote")]
-    quote:  Option<OptionQuote>,
-    #[serde(rename = "details")]
-    details: Option<ContractDetails>,
+    quote:                   Option<OptionQuote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -318,18 +356,6 @@ struct Greeks {
 struct OptionQuote {
     #[serde(rename = "ap")] ask: Option<f64>,
     #[serde(rename = "bp")] bid: Option<f64>,
-    #[serde(rename = "as")] ask_size: Option<f64>,
-    #[serde(rename = "bs")] bid_size: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ContractDetails {
-    #[serde(rename = "expirationDate")]
-    expiration_date: Option<String>,
-    #[serde(rename = "openInterest")]
-    open_interest:   Option<f64>,
-    #[serde(rename = "type")]
-    contract_type:   Option<String>,
 }
 
 // ── Iron Conduit Strategy ─────────────────────────────────────────────────────
@@ -343,12 +369,12 @@ impl IronConduitStrategy {
         client: &AlpacaClient,
         symbol: &str,
         days: u32,
-    ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), FerrumError> {
+    ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), FerrumError> {
         let start = (Utc::now() - chrono::Duration::days(days as i64))
             .format("%Y-%m-%dT00:00:00Z").to_string();
 
         let resp: BarsResponse = client
-            .get_with_query(
+            .get_data_with_query(
                 &format!("/v2/stocks/{symbol}/bars"),
                 &[
                     ("timeframe", "1Day"),
@@ -364,14 +390,57 @@ impl IronConduitStrategy {
         let highs:   Vec<f64> = resp.bars.iter().map(|b| b.high).collect();
         let lows:    Vec<f64> = resp.bars.iter().map(|b| b.low).collect();
         let volumes: Vec<f64> = resp.bars.iter().map(|b| b.volume).collect();
-        Ok((closes, highs, lows, volumes))
+        let opens:   Vec<f64> = resp.bars.iter().map(|b| b.open).collect();
+        Ok((closes, highs, lows, volumes, opens))
+    }
+
+    /// Build a BarContext for confluence scoring from the raw bars arrays.
+    fn make_bar_context(
+        closes:  &[f64],
+        highs:   &[f64],
+        lows:    &[f64],
+        opens:   &[f64],
+        volumes: &[f64],
+    ) -> Option<BarContext> {
+        let n = closes.len();
+        if n < 21 { return None; }
+
+        let high  = *highs.last()?;
+        let low   = *lows.last()?;
+        let open  = *opens.last()?;
+
+        // 5 bars ago (index n-6)
+        let low_5b_ago  = lows.get(n.wrapping_sub(6)).copied().unwrap_or(low);
+        let high_5b_ago = highs.get(n.wrapping_sub(6)).copied().unwrap_or(high);
+
+        // 20-day rolling extremes (excluding today)
+        let window_start = n.saturating_sub(21);
+        let high_20d = highs[window_start..n-1].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let low_20d  = lows[window_start..n-1].iter().cloned().fold(f64::INFINITY, f64::min);
+
+        // MACD histogram from the previous bar
+        let macd_hist_prev = if n >= 2 {
+            let m = indicators::macd_last(&closes[..n-1], 12, 26, 9);
+            m.histogram
+        } else {
+            f64::NAN
+        };
+
+        // Volume ratio is not directly needed here (it's in the snapshot), but included
+        // so that future callers can use it without recomputing.
+        let _ = volumes; // suppress unused warning
+
+        Some(BarContext {
+            high, low, open,
+            low_5b_ago, high_5b_ago,
+            high_20d, low_20d,
+            macd_hist_prev,
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl Strategy for IronConduitStrategy {
-    fn name(&self) -> &str { "iron-conduit" }
-
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;
@@ -395,19 +464,43 @@ impl Strategy for IronConduitStrategy {
         // Collect all symbols, respecting tier3 IV rank gate
         let all_symbols: Vec<&str> = cfg.symbols.all();
 
+        let cooldown = Duration::from_millis(
+            (cfg.strategy.market_data_cooldown * 1000) as u64
+        );
+
         for symbol in all_symbols {
+            sleep(cooldown).await;
+
+            // ── Cooldown veto: skip if we closed this underlying recently ────────
+            let cooldown_hours = entry.cooldown_after_close_hours;
+            {
+                let last_close_map = state.last_close_by_underlying.lock().await;
+                if let Some(&closed_at) = last_close_map.get(symbol) {
+                    let hours_since = (Utc::now() - closed_at).num_minutes() as f64 / 60.0;
+                    if hours_since < cooldown_hours {
+                        let _ = state.log_tx.send(LogEvent::info(format!(
+                            "[iron-conduit] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
+                            hours_since, cooldown_hours,
+                        )));
+                        continue;
+                    }
+                }
+            }
+
             // Fetch daily bars for indicator computation
-            let (closes, highs, lows, volumes) =
+            let (closes, highs, lows, volumes, opens) =
                 match Self::fetch_bars(&state.client, symbol, 90).await {
                     Ok(data) => data,
                     Err(e) => {
-                        warn!("[iron-conduit] {symbol} bars fetch failed: {e}");
+                        let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} bars fetch failed: {e}")));
                         continue;
                     }
                 };
 
             if closes.len() < 60 {
-                info!("[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len());
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len(),
+                )));
                 continue;
             }
 
@@ -415,30 +508,97 @@ impl Strategy for IronConduitStrategy {
             let snap = match indicators::compute_snapshot(
                 &closes, &highs, &lows, &volumes,
                 rc.adx_trend_threshold, rc.adx_no_trend_threshold,
-            ) {
-                Some(s) => s,
-                None => { info!("[iron-conduit] {symbol}: snapshot failed"); continue; }
-            };
-
-            info!("[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1}",
-                snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx);
-
-            // Confluence gate
-            let (score, direction) = match indicators::confluence_score(
-                &snap, rc.rsi_overbought, rc.rsi_oversold,
+                entry.bb_width_min_pct, entry.ema_slope_lookback_bars,
             ) {
                 Some(s) => s,
                 None => {
-                    info!("[iron-conduit] {symbol}: choppy regime — skipping");
+                    let _ = state.log_tx.send(LogEvent::warn(format!(
+                        "[iron-conduit] {symbol}: snapshot failed",
+                    )));
                     continue;
                 }
             };
 
-            info!("[iron-conduit] {symbol}: confluence score={score} direction={direction:?}");
+            // Build bar context for v2.1 scoring
+            let ctx = match Self::make_bar_context(&closes, &highs, &lows, &opens, &volumes) {
+                Some(c) => c,
+                None => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol}: bar context failed")));
+                    continue;
+                }
+            };
 
-            if score < entry.min_confluence_score {
-                info!("[iron-conduit] {symbol}: score {score} < min {}", entry.min_confluence_score);
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
+                snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx,
+                snap.bbands.width * 100.0,
+            )));
+
+            // ── Confluence gate (v2.1 regime-specific scoring) ───────────────
+            let (score, max_score, direction) = match indicators::confluence_score(
+                &snap, &ctx, entry.allow_choppy,
+            ) {
+                Some(s) => s,
+                None => {
+                    // Choppy regime and allow_choppy = false
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol}: choppy regime — no trade (allow_choppy=false)",
+                    )));
+                    let _ = state.db.insert_scan_result(
+                        symbol, &snap.regime.to_string(), 0, None, "choppy",
+                    ).await;
+                    continue;
+                }
+            };
+
+            let dir_str = match direction {
+                TradeDirection::Call => "call",
+                TradeDirection::Put  => "put",
+            };
+
+            // Regime-specific minimum score gate
+            use ferrum_core::indicators::Regime;
+            let min_score = match snap.regime {
+                Regime::TrendingUp | Regime::TrendingDown => entry.trend_min_score,
+                Regime::RangeBound                        => entry.range_min_score,
+                Regime::Choppy                            => entry.choppy_min_score,
+            };
+
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "[iron-conduit] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
+                snap.regime,
+            )));
+
+            if score < min_score {
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: score {score} < min {min_score} — skip",
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "below_threshold",
+                ).await;
                 continue;
+            }
+
+            // ── Extreme proximity veto ───────────────────────────────────────
+            // Reject if today's high (for calls) is within `extreme_proximity_atr` ATRs
+            // of the 20-day high — buying at the local extreme is a high-probability stop-out.
+            if !snap.atr.is_nan() && snap.atr > 0.0 {
+                let proximity_threshold = entry.extreme_proximity_atr * snap.atr;
+                let vetoed = match direction {
+                    TradeDirection::Call => ctx.high_20d - ctx.high < proximity_threshold,
+                    TradeDirection::Put  => ctx.low - ctx.low_20d  < proximity_threshold,
+                };
+                if vetoed {
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
+                    )));
+                    let _ = state.db.insert_scan_result(
+                        symbol, &snap.regime.to_string(), score as i32,
+                        Some(dir_str), "extreme_proximity",
+                    ).await;
+                    continue;
+                }
             }
 
             // IV rank check
@@ -447,38 +607,98 @@ impl Strategy for IronConduitStrategy {
                 TradeDirection::Put  => "put",
             };
 
-            // Fetch options chain
-            let chain_resp: OptionsSnapshotResponse = match state.client
+            // ── Step 1: fetch contract list from Trading API ──────────────────
+            let contracts_resp: ContractsResponse = match state.client
                 .get_with_query(
-                    &format!("/v2/snapshots/options/{symbol}"),
+                    "/v2/options/contracts",
                     &[
+                        ("underlying_symbols", symbol),
                         ("expiration_date_gte", exp_min.as_str()),
                         ("expiration_date_lte", exp_max.as_str()),
                         ("type", contract_type_str),
-                        ("limit", "250"),
+                        ("status", "active"),
+                        ("limit", "200"),
                     ],
                 )
                 .await
             {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!("[iron-conduit] {symbol} chain fetch failed: {e}");
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} contracts fetch failed: {e}")));
                     continue;
                 }
             };
 
-            // Collect and rank qualifying contracts
-            let mut candidates: Vec<(&String, &OptionSnapshot, f64, f64, f64)> = Vec::new();
+            // Pre-filter by tradable + DTE + open interest.
+            // OI missing from Alpaca (None) is treated as "unknown — allow" so
+            // otherwise-liquid strikes aren't silently dropped early in the session;
+            // the bid/ask spread check in Step 2 is the real liquidity gate.
+            let today = Utc::now().date_naive();
+            let total_returned = contracts_resp.option_contracts.len();
+            let filtered_contracts: Vec<&OptionContract> = contracts_resp.option_contracts.iter()
+                .filter(|c| {
+                    if !c.tradable { return false; }
+                    if let Some(oi) = c.open_interest_opt() {
+                        if oi < liq.min_open_interest as f64 { return false; }
+                    }
+                    if let Ok(exp) = chrono::NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
+                        let dte = (exp - today).num_days();
+                        dte >= entry.dte_min as i64 && dte <= entry.dte_max as i64
+                    } else {
+                        false
+                    }
+                })
+                .collect();
 
-            for (contract, snap_opt) in &chain_resp.snapshots {
+            if filtered_contracts.is_empty() {
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter \
+                     ({total_returned} returned by Alpaca, DTE {}-{}, OI≥{})",
+                    entry.dte_min, entry.dte_max, liq.min_open_interest,
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "no_contracts",
+                ).await;
+                continue;
+            }
+
+            // ── Step 2: fetch snapshots from Data API (indicative = free feed) ─
+            let symbols_csv: String = filtered_contracts.iter()
+                .take(100)  // API limit per request
+                .map(|c| c.symbol.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let snapshot_resp: OptionsSnapshotResponse = match state.client
+                .get_data_with_query(
+                    "/v1beta1/options/snapshots",
+                    &[("symbols", &symbols_csv), ("feed", "indicative")],
+                )
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} snapshots fetch failed: {e}")));
+                    continue;
+                }
+            };
+
+            // Build a lookup from contract symbol → open_interest for scoring.
+            // Unknown OI (Alpaca returned null) → 0.0 here; scoring just uses
+            // it as a tie-breaker so a 0 is fine.
+            let oi_map: std::collections::HashMap<&str, f64> = filtered_contracts.iter()
+                .map(|c| (c.symbol.as_str(), c.open_interest_opt().unwrap_or(0.0)))
+                .collect();
+
+            // Collect and rank qualifying contracts
+            let mut candidates: Vec<(String, f64, f64, f64)> = Vec::new(); // (symbol, mid, delta_score, oi)
+
+            for (contract, snap_opt) in &snapshot_resp.snapshots {
                 let delta = snap_opt.greeks.as_ref().and_then(|g| g.delta).unwrap_or(0.0);
                 let delta_abs = delta.abs();
 
                 if delta_abs < entry.delta_min || delta_abs > entry.delta_max { continue; }
-
-                // Liquidity checks
-                let oi = snap_opt.details.as_ref().and_then(|d| d.open_interest).unwrap_or(0.0);
-                if oi < liq.min_open_interest as f64 { continue; }
 
                 let (bid, ask) = match &snap_opt.quote {
                     Some(q) => match (q.bid, q.ask) {
@@ -491,7 +711,6 @@ impl Strategy for IronConduitStrategy {
                 if ask - bid > liq.max_bid_ask_spread { continue; }
                 if ask <= 0.0 { continue; }
 
-                // Premium budget check
                 let mid = (bid + ask) / 2.0;
                 if mid * 100.0 > cfg.sizing.max_position_usd { continue; }
 
@@ -500,11 +719,8 @@ impl Strategy for IronConduitStrategy {
                 let iv_result = iv_engine
                     .compute(symbol, current_iv, &closes, &state.db)
                     .await
-                    .unwrap_or_else(|_| crate::iv_rank::IvRankResult {
-                        iv_rank: 50.0, current_iv, method: crate::iv_rank::IvMethod::HvProxy,
-                    });
+                    .unwrap_or_else(|_| crate::iv_rank::IvRankResult { iv_rank: 50.0 });
 
-                // Tier 3 symbols require elevated IV rank
                 if cfg.symbols.tier_of(symbol) == Some(3)
                     && iv_result.iv_rank < cfg.symbols.tier3_iv_rank_min
                 {
@@ -512,29 +728,47 @@ impl Strategy for IronConduitStrategy {
                 }
 
                 if !iv_engine.is_buyable(iv_result.iv_rank) {
-                    info!("[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
-                        iv_result.iv_rank);
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
+                        iv_result.iv_rank,
+                    )));
                     continue;
                 }
 
                 // Store IV snapshot
                 let _ = state.db.upsert_iv_snapshot(symbol, current_iv, snap.hv20, iv_result.iv_rank).await;
 
-                // Score contract: prefer delta closest to preferred, tightest spread, highest OI
                 let delta_score = (delta_abs - entry.preferred_delta).abs();
-                candidates.push((contract, snap_opt, mid, delta_score, oi));
+                let oi = *oi_map.get(contract.as_str()).unwrap_or(&0.0);
+                candidates.push((contract.clone(), mid, delta_score, oi));
             }
 
-            // Rank: lowest delta_score first, then highest OI
+            // Rank: closest delta to preferred first, then highest OI
             candidates.sort_by(|a, b| {
-                a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)
-                    .then(b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal))
+                a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+                    .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
             });
 
-            if let Some((contract, _, mid, delta_score, oi)) = candidates.first() {
-                let size_factor  = cfg.sizing.size_factor_for(score);
-                let iv_adj       = iv_engine.size_factor(0.0); // default 1.0 — refined per contract above
-                let qty          = ((cfg.sizing.max_position_usd * size_factor * iv_adj)
+            if let Some((contract, mid, delta_score, oi)) = candidates.first() {
+                // v2.1 regime-specific size factors
+                let size_factor = {
+                    use ferrum_core::indicators::Regime;
+                    match snap.regime {
+                        Regime::Choppy => 0.5,  // always half size in choppy
+                        Regime::RangeBound => match score {
+                            s if s >= 9  => 1.0,
+                            s if s >= 7  => 0.75,
+                            _            => 0.5,
+                        },
+                        Regime::TrendingUp | Regime::TrendingDown => match score {
+                            s if s >= 11 => 1.0,
+                            s if s >= 9  => 0.75,
+                            _            => 0.5,
+                        },
+                    }
+                };
+                let iv_adj      = iv_engine.size_factor(0.0);
+                let qty         = ((cfg.sizing.max_position_usd * size_factor * iv_adj)
                     / (mid * 100.0))
                     .floor() as u32;
                 let qty = qty.max(1);
@@ -543,22 +777,30 @@ impl Strategy for IronConduitStrategy {
                     TradeDirection::Call | TradeDirection::Put => LegAction::Buy,
                 };
 
-                info!(
-                    "[iron-conduit] SIGNAL {symbol} {contract} \
-                     dir={direction:?} mid=${mid:.2} score={score} \
-                     delta_dist={delta_score:.3} oi={oi:.0} qty={qty}"
-                );
+                let _ = state.log_tx.send(LogEvent::info(format!(
+                    "[iron-conduit] SIGNAL {symbol} {contract} dir={dir_str} \
+                     mid=${mid:.2} score={score}/{max_score} size={size_factor:.2} delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
+                )));
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "entered",
+                ).await;
 
                 signals.push(Signal::EnterLong {
                     symbol: symbol.to_string(),
                     legs: vec![OptionLeg {
-                        contract:    (*contract).clone(),
+                        contract:   contract.clone(),
                         action,
                         qty,
                         order_type:  OrderType::Limit,
                         limit_price: Some(*mid),
                     }],
                 });
+            } else {
+                let _ = state.db.insert_scan_result(
+                    symbol, &snap.regime.to_string(), score as i32,
+                    Some(dir_str), "no_contracts",
+                ).await;
             }
         }
 

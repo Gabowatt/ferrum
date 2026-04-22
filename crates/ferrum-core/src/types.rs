@@ -90,10 +90,12 @@ pub enum IpcCommand {
     Stop,
     ToggleMode { mode: String },
     GetPnl { period: String },
+    GetEquityHistory { period: String },
     GetFills,
     GetPositions,
     GetPdt,
     GetMarketClock,
+    GetLogs { limit: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,13 @@ pub enum IpcResponse {
     MarketClock {
         is_open:     bool,
         next_change: String,   // e.g. "opens 09:30" or "closes 16:00"
+    },
+    Logs {
+        events: Vec<LogEvent>,
+    },
+    EquityHistory {
+        timestamps: Vec<i64>,   // unix milliseconds
+        equity:     Vec<f64>,
     },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),

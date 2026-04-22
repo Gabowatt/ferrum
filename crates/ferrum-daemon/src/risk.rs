@@ -1,15 +1,20 @@
+use std::collections::HashMap;
+
 use ferrum_core::{
-    config::{AppConfig, Mode},
+    config::AppConfig,
     error::FerrumError,
     types::{OptionLeg, Signal},
 };
 
 pub struct RiskGuard<'a> {
-    pub config:        &'a AppConfig,
+    pub config:         &'a AppConfig,
     pub open_positions: u32,
     pub daily_pnl_pct:  f64,
     pub account_equity: f64,
     pub total_at_risk:  f64,
+    /// Count of open positions by sector (derived from open underlyings + config
+    /// sector map). Used to enforce `sizing.max_sector_positions`.
+    pub sector_counts:  HashMap<String, u32>,
 }
 
 impl<'a> RiskGuard<'a> {
@@ -20,16 +25,32 @@ impl<'a> RiskGuard<'a> {
         account_equity: f64,
         total_at_risk: f64,
     ) -> Self {
-        Self { config, open_positions, daily_pnl_pct, account_equity, total_at_risk }
+        Self {
+            config,
+            open_positions,
+            daily_pnl_pct,
+            account_equity,
+            total_at_risk,
+            sector_counts: HashMap::new(),
+        }
+    }
+
+    /// Populate sector counts from the list of currently-open underlyings.
+    /// Call this before `check_entry` so the sector concentration check runs.
+    pub fn with_open_underlyings(mut self, underlyings: &[String]) -> Self {
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for u in underlyings {
+            let sector = self.config.symbols.sector_of(u).to_string();
+            *counts.entry(sector).or_insert(0) += 1;
+        }
+        self.sector_counts = counts;
+        self
     }
 
     /// Validate a potential entry signal. Returns Ok(()) or Err(RiskViolation).
+    /// Live-mode gating now lives in `main.rs` via `live.enabled`; no hard
+    /// block here so paper + opted-in-live both reach this check.
     pub fn check_entry(&self, signal: &Signal) -> Result<(), FerrumError> {
-        // Hard block on live trading in V1.
-        if self.config.alpaca.mode == Mode::Live {
-            return Err(FerrumError::LiveTradingDisabled);
-        }
-
         // Equity floor.
         if self.account_equity < self.config.risk.halt_equity_floor {
             return Err(FerrumError::RiskViolation(format!(
@@ -53,6 +74,19 @@ impl<'a> RiskGuard<'a> {
             )));
         }
 
+        // Sector concentration: block if the underlying's sector is already at
+        // `max_sector_positions`.
+        if let Some(underlying) = signal_underlying(signal) {
+            let sector = self.config.symbols.sector_of(underlying);
+            let current = self.sector_counts.get(sector).copied().unwrap_or(0);
+            if current >= self.config.sizing.max_sector_positions {
+                return Err(FerrumError::RiskViolation(format!(
+                    "sector '{sector}' already has {current} open positions (limit {})",
+                    self.config.sizing.max_sector_positions
+                )));
+            }
+        }
+
         // Portfolio risk limit.
         let available = self.account_equity * (1.0 - self.config.sizing.min_cash_reserve_pct / 100.0);
         let max_risk  = available * self.config.sizing.max_portfolio_risk_pct / 100.0;
@@ -63,7 +97,7 @@ impl<'a> RiskGuard<'a> {
         }
 
         // Position size check.
-        if let Some(cost) = self.estimate_position_usd(signal) {
+        if let Some(cost) = estimate_position_usd(signal) {
             if cost > self.config.sizing.max_position_usd {
                 return Err(FerrumError::RiskViolation(format!(
                     "position cost ${cost:.2} exceeds max ${:.2}",
@@ -82,16 +116,24 @@ impl<'a> RiskGuard<'a> {
 
         Ok(())
     }
+}
 
-    fn estimate_position_usd(&self, signal: &Signal) -> Option<f64> {
-        let legs: &Vec<OptionLeg> = match signal {
-            Signal::EnterLong  { legs, .. } => legs,
-            Signal::EnterShort { legs, .. } => legs,
-            Signal::Exit { .. }             => return None,
-        };
-        let total: f64 = legs.iter()
-            .filter_map(|leg| leg.limit_price.map(|p| p * leg.qty as f64 * 100.0))
-            .sum();
-        if total > 0.0 { Some(total) } else { None }
+fn estimate_position_usd(signal: &Signal) -> Option<f64> {
+    let legs: &Vec<OptionLeg> = match signal {
+        Signal::EnterLong  { legs, .. } => legs,
+        Signal::EnterShort { legs, .. } => legs,
+        Signal::Exit { .. }             => return None,
+    };
+    let total: f64 = legs.iter()
+        .filter_map(|leg| leg.limit_price.map(|p| p * leg.qty as f64 * 100.0))
+        .sum();
+    if total > 0.0 { Some(total) } else { None }
+}
+
+fn signal_underlying(signal: &Signal) -> Option<&str> {
+    match signal {
+        Signal::EnterLong  { symbol, .. } => Some(symbol.as_str()),
+        Signal::EnterShort { symbol, .. } => Some(symbol.as_str()),
+        Signal::Exit { symbol }           => Some(symbol.as_str()),
     }
 }

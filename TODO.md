@@ -1,76 +1,67 @@
-# ferrum — session checkpoint
+# ferrum — current checkpoint
 
-## Completed (previous sessions)
+> Historical log of completed work: [`docs/changelog/history.md`](docs/changelog/history.md)
 
-- [x] Workspace scaffold — Cargo.toml, config.toml, .gitignore
-- [x] ferrum-core — AppConfig, AlpacaClient, BotStatus, LogEvent, IPC types, Signal/OptionLeg
-- [x] ferrum-daemon — boot, live gate, Alpaca health check, Unix socket IPC, SIGINT/SIGTERM shutdown
-- [x] SQLite — fills, log_events, sessions tables
-- [x] Full config schema — symbols tiers, liquidity, entry/exit, regime, IV engine, sizing, PDT
-- [x] Indicators engine — EMA 9/20/50, RSI 14, MACD, ADX, Bollinger Bands, ATR, HV20, volume ratio
-- [x] Regime detection — TrendingUp / TrendingDown / RangeBound / Choppy
-- [x] Confluence scoring — 11 signals, minimum score 8 gate
-- [x] PDT tracker — rolling 5-day window, emergency stop + exceptional win (≥75%) exceptions
-- [x] IV rank engine — HV proxy on startup, switches to actual IV after 30 days of snapshots
-- [x] Iron Conduit strategy — full scan loop: bars → indicators → regime → confluence → chain → filters → signal
-- [x] DB schema extended — day_trades, iv_snapshots, trade_log tables
-- [x] Risk guard — equity floor, drawdown, position limits, cash reserve, sector cap
-- [x] Exceptional-win day trade rule — added to strategy doc + implemented
+## Status
 
-## Completed this session (V1 paper trading readiness + polish)
+- **Active branch**: `V2.1` (multi-strategy refactor) — being created next.
+- **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
+- **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR).
+- **Build**: clean, zero warnings (`cargo build --workspace`).
+- **Daemon**: stop button verified working; live-mode hard block removed (gated only at startup via `live.enabled`).
 
-- [x] Order submission — `orders.rs` submits limit orders via Alpaca `POST /v2/orders`
-- [x] Open position tracking — `OpenPositionMeta` in `AppState.open_positions`
-- [x] Market hours gate — checks `/v2/clock` + ET scan window (09:45–15:45)
-- [x] Exit monitoring loop — tiered exits: stop-loss (-30%), DTE≤7 low-P&L, profit target (+40%), time exit (DTE≤10), dead money (5 days <5%)
-- [x] PDT-aware exit — blocks same-day close at limit, allows emergency (-50%) and exceptional win (+75%)
-- [x] `force_exit_next_open` flag on PDT-blocked positions
-- [x] IPC GetPositions + GetPdt commands
-- [x] TUI positions panel — live contract rows with qty, entry price, P&L%
-- [x] TUI header — PDT: used/max with green/yellow/red color coding
-- [x] ferrum-tui — polls positions and PDT every 500ms loop tick
-- [x] Order fill poller — `order_poller.rs` confirms fills every 30s, handles cancels/expirations, records day trades on close
-- [x] EMA50 break exit — fetches underlying bars per cycle (cached per underlying), closes call if close < EMA50, put if close > EMA50
-- [x] Fixed premature position removal — exit monitor now sets `pending_close_order_id` instead of removing immediately
-- [x] Pixel art FERRUM logo — 5-row block-character logo with hot-iron amber→red gradient in TUI header
+## 🐛 Active bugs
 
-## Next immediate step — resume here next session
+_None open._
 
-### 1. Dynamic / staged profit exits
-Replace the fixed +40% profit target with a smarter exit system:
-- **Trailing profit target**: once P&L exceeds a threshold (e.g. +30%), the exit level trails the peak P&L by a fixed offset (e.g. 15%), locking in gains as the contract appreciates
-- **Staged closes (qty > 1)**: close 50% at first target, let remainder trail independently
-- qty == 1: trailing target only (no split needed)
-- Design TBD — revisit after paper trading gives real P&L distribution data
+## Next up — V2.1 multi-strategy architecture
 
-### 2. Sector concentration tracking
-`RiskGuard::check_entry` has a `max_sector_positions` config but sector lookup is not wired.
-- Add sector map to config or hard-code in risk.rs
-- Before entry: count open positions in same sector via `open_positions`
-- Block if count >= max_sector_positions
+> Full design doc: [`docs/multi-strategy-plan.md`](docs/multi-strategy-plan.md)
 
-### 3. Export [E] keybinding in TUI
+Promote the daemon from one hardcoded strategy to a registry of strategies that
+run in parallel with live UI toggles. Rename the current strategy
+(misleadingly called "iron conduit") to **Forge**, then add a true 4-leg
+**Iron Condor** as the second strategy.
 
-### 4. TUI privacy toggles
-- `[P]` key — toggle PnL panel visibility (hide today/month/year values, show `****`)
-- `[B]` key — toggle buying power panel in positions area: show free cash + used margin
-  (free: available buying power, used: sum of open position market values)
-- Useful when screen-sharing or recording
-- Wire TUI `[E]` key to call `ferrum-export` binary
-- Date range picker modal → write CSV to `~/ferrum-export-YYYY.csv`
+### Phase 1 — Strategy registry + attribution (no behavior change)
+Make the daemon multi-strategy-shaped while it still runs only Forge.
+- [ ] Promote `Strategy` trait (`id`, `scan_interval`, `check_exit`).
+- [ ] Replace single strategy instance with `Vec<Arc<StrategyHandle>>`; one loop per strategy.
+- [ ] Add `strategy_id` to `OpenPositionMeta`.
+- [ ] DB migration: add `strategy_id` column to fills/trade_log/scan_results; add nullable `position_id` to trade_log (for Phase 3 condor leg grouping).
+- [ ] Pipe `strategy_id` through order submission → fill records → trade log.
+- [ ] Rename `IronConduitStrategy` → `ForgeStrategy`; rename strategy doc and config section accordingly.
 
-## To run for paper trading (Monday)
+### Phase 2 — Live toggle + UI plumbing
+- [ ] `enabled: AtomicBool` per strategy handle; loop checks before each scan.
+- [ ] IPC `GetStrategies`, `SetStrategyEnabled` (writes back to config.toml).
+- [ ] Web `StrategiesPanel` with toggles + per-strategy mini-stats.
+- [ ] Strategy badge column on `PositionsPanel`.
+
+### Phase 3 — Iron Condor strategy
+**Manual prerequisite:** request multi-leg spread approval on Alpaca paper.
+- [ ] Multi-leg `mleg` order support in `orders.rs`.
+- [ ] `strategy/iron_condor.rs` — 4-strike selection by delta.
+- [ ] `IronCondorEntryConfig` — `short_delta`, `wing_width_pct`, `min_credit_pct_of_width`.
+- [ ] Condor sizing (max loss = wing × 100 − credit).
+- [ ] Strategy-specific exits via `Strategy::check_exit`: 50% PT / 2× credit stop / 21 DTE close.
+- [ ] `OpenPositionMeta` evolves to optional multi-leg.
+- [ ] Web `PositionsPanel` collapses 4 legs into one row.
+
+### Backlog (post V2.1)
+- Run Forge for a week with the 0.25 ATR veto and re-evaluate near-miss data.
+- Vertical credit spreads as a third strategy.
+- Per-strategy P&L tiles in the dashboard.
+- Homelab deployment (systemd/Docker, LAN-only CORS, persistent data volume).
+
+## To run
 
 ```bash
-# 1. Ensure config.toml has your Alpaca paper keys
-cargo run -p ferrum-daemon   # terminal 1 — leave running
-cargo run -p ferrum-tui      # terminal 2 — press [S] to start strategy
-```
+cargo run -p ferrum-daemon      # terminal 1 — leave running
+cargo run -p ferrum-web         # terminal 2 — Axum server on :3000
+cd web && npm run dev           # terminal 3 — Vite dev server, opens browser
 
-The daemon will:
-- Connect to Alpaca paper account
-- Wait for market open (09:45 ET)
-- Scan every 5 minutes across all symbol tiers
-- Submit limit orders at mid-price when confluence score ≥ 8
-- Monitor open positions every 60s for exit conditions
-- Never exceed 2 day trades in a rolling 5-day window
+# Production: ferrum-web serves the built React bundle directly
+cd web && npm run build
+cargo run -p ferrum-web         # dashboard on http://localhost:3000
+```

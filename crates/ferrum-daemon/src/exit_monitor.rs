@@ -2,9 +2,8 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn};
 use serde::Deserialize;
-use chrono::Utc;
+use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     error::FerrumError,
@@ -19,7 +18,6 @@ use crate::{orders, AppState};
 pub struct AlpacaPosition {
     pub symbol:          String,
     pub qty:             String,
-    pub unrealized_pl:   String,
     pub unrealized_plpc: String,
     pub current_price:   String,
     pub cost_basis:      String,
@@ -37,13 +35,31 @@ pub async fn run_exit_monitor(state: Arc<AppState>) {
     }
 }
 
+// ── Market hours guard ────────────────────────────────────────────────────────
+
+/// Returns true if current ET time is within regular market hours (9:30–16:05).
+/// Uses local time offset — no API call needed.
+/// EDT (UTC-4) Mar–Nov, EST (UTC-5) Dec–Feb.
+fn is_market_hours() -> bool {
+    let now = Utc::now();
+    let month = now.month();
+    let et_offset: i64 = if month >= 3 && month <= 11 { -4 } else { -5 };
+    let et_hour = (now.hour() as i64 + et_offset).rem_euclid(24) as u32;
+    let et_mins = et_hour * 60 + now.minute();
+    et_mins >= 570 && et_mins < 965  // 9:30 AM–4:05 PM ET
+}
+
 // ── Core exit logic ───────────────────────────────────────────────────────────
 
 async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
+    // Never submit orders outside market hours — prices are stale and orders
+    // would be queued or rejected by Alpaca. Update peak P&L tracking only.
+    let market_open = is_market_hours();
+
     let alpaca_positions: Vec<AlpacaPosition> = match state.client.get("/v2/positions").await {
         Ok(v)  => v,
         Err(e) => {
-            warn!("exit monitor: /v2/positions failed: {e}");
+            let _ = state.log_tx.send(LogEvent::warn(format!("exit monitor: /v2/positions failed: {e}")));
             return Ok(());
         }
     };
@@ -53,7 +69,6 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
 
     for ap in &alpaca_positions {
         let qty: f64            = ap.qty.parse().unwrap_or(0.0);
-        let unrealized_pl: f64  = ap.unrealized_pl.parse().unwrap_or(0.0);
         let unrealized_plpc: f64 = ap.unrealized_plpc.parse().unwrap_or(0.0);
         let current_price: f64  = ap.current_price.parse().unwrap_or(0.0);
         let cost_basis: f64     = ap.cost_basis.parse().unwrap_or(0.0);
@@ -70,13 +85,14 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
 
         // Skip if we already have a pending close order out
         if meta.pending_close_order_id.is_some() {
-            info!("exit monitor: {} has pending close order — waiting for fill", ap.symbol);
             continue;
         }
 
-        let exit_cfg  = &state.config.strategy.exit;
-        let days_held = (Utc::now() - meta.opened_at).num_days();
-        let dte       = dte_from_occ_symbol(&ap.symbol).unwrap_or(99);
+        let exit_cfg   = &state.config.strategy.exit;
+        let held       = Utc::now() - meta.opened_at;
+        let hours_held = held.num_minutes() as f64 / 60.0;
+        let days_held  = held.num_days();
+        let dte        = dte_from_occ_symbol(&ap.symbol).unwrap_or(99);
 
         // ── EMA50 break check (cached per underlying per cycle) ───────────────
         let ema50_broken = {
@@ -88,14 +104,38 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             }
         };
 
+        // ── Update peak P&L for trailing profit target ────────────────────────
+        {
+            let mut positions = state.open_positions.lock().await;
+            if let Some(m) = positions.get_mut(&ap.symbol) {
+                if pnl_pct > m.peak_pnl_pct {
+                    m.peak_pnl_pct = pnl_pct;
+                }
+            }
+        }
+        let peak_pnl = meta.peak_pnl_pct.max(pnl_pct);  // use updated peak
+
+        // ── Trailing profit target ────────────────────────────────────────────
+        // Activates once P&L >= trailing_activation_pct.
+        // Closes when P&L drops trailing_trail_gap_pct below observed peak.
+        let trailing_triggered = peak_pnl >= exit_cfg.trailing_activation_pct
+            && pnl_pct <= peak_pnl - exit_cfg.trailing_trail_gap_pct;
+
         // ── Exit priority order ───────────────────────────────────────────────
-        let exit_reason: Option<&str> = if pnl_pct <= -(exit_cfg.stop_loss_pct) {
+        // Emergency stop bypasses min_hold_hours — a -50% loss is always closed.
+        let is_emergency   = pnl_pct <= -(exit_cfg.emergency_stop_pct);
+        let hold_gate_open = hours_held >= exit_cfg.min_hold_hours || is_emergency;
+
+        let exit_reason: Option<&str> = if is_emergency {
+            Some("emergency_stop")
+        } else if pnl_pct <= -(exit_cfg.stop_loss_pct) && hold_gate_open {
             Some("stop_loss")
         } else if dte <= exit_cfg.theta_exit_dte && pnl_pct < exit_cfg.theta_exit_min_pnl_pct {
             Some("theta_exit")
-        } else if pnl_pct >= exit_cfg.profit_target_single_pct {
-            Some("profit_target")
-        } else if ema50_broken {
+        } else if trailing_triggered {
+            Some("trailing_profit")
+        } else if ema50_broken && market_open {
+            // EMA50 break only fires during market hours — prevents midnight stale-price exits
             Some("ema50_break")
         } else if dte <= exit_cfg.time_exit_dte {
             Some("time_exit")
@@ -112,8 +152,19 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
             None    => continue,
         };
 
-        info!("exit monitor: {} → {} (pnl={:.1}% dte={} days_held={})",
-            ap.symbol, exit_reason, pnl_pct, dte, days_held);
+        // Do not submit orders outside market hours (prices are stale).
+        if !market_open {
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "exit monitor: {} would exit ({}) but market is closed — queuing for open",
+                ap.symbol, exit_reason,
+            )));
+            continue;
+        }
+
+        let _ = state.log_tx.send(LogEvent::info(format!(
+            "exit monitor: {} → {} (pnl={:.1}% peak={:.1}% held={:.1}h dte={})",
+            ap.symbol, exit_reason, pnl_pct, peak_pnl, hours_held, dte,
+        )));
 
         // ── PDT gate ──────────────────────────────────────────────────────────
         let pdt_check = {
@@ -205,7 +256,7 @@ async fn fetch_ema50(state: &AppState, underlying: &str) -> Option<f64> {
     struct Bar { #[serde(rename = "c")] close: f64 }
 
     let resp: BarsResp = state.client
-        .get_with_query(
+        .get_data_with_query(
             &format!("/v2/stocks/{underlying}/bars"),
             &[("timeframe", "1Day"), ("start", &start), ("limit", "100"), ("feed", "iex")],
         )
