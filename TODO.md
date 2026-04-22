@@ -1,254 +1,57 @@
-# ferrum — session checkpoint
+# ferrum — current checkpoint
 
-## Completed (previous sessions)
+> Historical log of completed work: [`docs/changelog/V1-V2-history.md`](docs/changelog/V1-V2-history.md)
 
-- [x] Workspace scaffold — Cargo.toml, config.toml, .gitignore
-- [x] ferrum-core — AppConfig, AlpacaClient, BotStatus, LogEvent, IPC types, Signal/OptionLeg
-- [x] ferrum-daemon — boot, live gate, Alpaca health check, Unix socket IPC, SIGINT/SIGTERM shutdown
-- [x] SQLite — fills, log_events, sessions tables
-- [x] Full config schema — symbols tiers, liquidity, entry/exit, regime, IV engine, sizing, PDT
-- [x] Indicators engine — EMA 9/20/50, RSI 14, MACD, ADX, Bollinger Bands, ATR, HV20, volume ratio
-- [x] Regime detection — TrendingUp / TrendingDown / RangeBound / Choppy
-- [x] Confluence scoring — 11 signals, minimum score 8 gate
-- [x] PDT tracker — rolling 5-day window, emergency stop + exceptional win (≥75%) exceptions
-- [x] IV rank engine — HV proxy on startup, switches to actual IV after 30 days of snapshots
-- [x] Iron Conduit strategy — full scan loop: bars → indicators → regime → confluence → chain → filters → signal
-- [x] DB schema extended — day_trades, iv_snapshots, trade_log tables
-- [x] Risk guard — equity floor, drawdown, position limits, cash reserve, sector cap
-- [x] Exceptional-win day trade rule — added to strategy doc + implemented
+## Status
 
-## Completed this session (V1 paper trading readiness + polish)
+- **Branch**: V2 (multi-leg condors + ongoing tuning)
+- **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR)
+- **Build**: clean, zero warnings (`cargo build --workspace`)
+- **Daemon**: stop button verified working; live-mode hard block removed (gated only at startup via `live.enabled`)
 
-- [x] Order submission — `orders.rs` submits limit orders via Alpaca `POST /v2/orders`
-- [x] Open position tracking — `OpenPositionMeta` in `AppState.open_positions`
-- [x] Market hours gate — checks `/v2/clock` + ET scan window (09:45–15:45)
-- [x] Exit monitoring loop — tiered exits: stop-loss (-30%), DTE≤7 low-P&L, profit target (+40%), time exit (DTE≤10), dead money (5 days <5%)
-- [x] PDT-aware exit — blocks same-day close at limit, allows emergency (-50%) and exceptional win (+75%)
-- [x] `force_exit_next_open` flag on PDT-blocked positions
-- [x] IPC GetPositions + GetPdt commands
-- [x] TUI positions panel — live contract rows with qty, entry price, P&L%
-- [x] TUI header — PDT: used/max with green/yellow/red color coding
-- [x] ferrum-tui — polls positions and PDT every 500ms loop tick
-- [x] Order fill poller — `order_poller.rs` confirms fills every 30s, handles cancels/expirations, records day trades on close
-- [x] EMA50 break exit — fetches underlying bars per cycle (cached per underlying), closes call if close < EMA50, put if close > EMA50
-- [x] Fixed premature position removal — exit monitor now sets `pending_close_order_id` instead of removing immediately
-- [x] Pixel art FERRUM logo — 5-row block-character logo with hot-iron amber→red gradient in TUI header
+## 🐛 Active bugs
 
-## Completed this session (paper trading day 1 — 2026-04-06)
+_None open._
 
-- [x] Diagnosed empty `log_events` table — `log_tx` broadcast had no DB subscriber
-- [x] Added log persistence task in `ferrum-daemon/src/main.rs` — subscribes to `log_tx`, writes every event to SQLite via `db.insert_log()`
-- [x] Added `db.recent_logs(limit)` query method
-- [x] Added `GetLogs { limit }` IPC command + `Logs { events }` IPC response to `ferrum-core/src/types.rs`
-- [x] Wired `GetLogs` handler in `ferrum-daemon/src/ipc.rs`
-- [x] Restart daemon to activate log persistence
-- [x] Fixed EDT/EST bug in scan window check — was hardcoded to UTC-5, now uses UTC-4 Mar–Nov
-- [x] COIN bars 404 on IEX feed — expected, gracefully skipped; left in config intentionally
-- [x] All symbols 404 on bars/options — root cause: bars + options snapshot calls were hitting paper-api.alpaca.markets instead of data.alpaca.markets; fixed by adding get_data_with_query() to AlpacaClient using DATA_URL constant
-- [x] Fixed options chain 404 — wrong endpoint; paper trading options is free on all plans
-  - Step 1: GET /v2/options/contracts (Trading API) → filter by DTE, OI, tradable
-  - Step 2: GET /v1beta1/options/snapshots?feed=indicative (Data API) → greeks + quotes
-- [x] Fixed 429 rate limit — market_data_cooldown was configured but never applied; now sleeps between each symbol in scan loop
-- [x] Fixed decode error on SPY/QQQ — open_interest field is a string in API response, not a number; added open_interest_f64() helper
+## Next up
 
-## Completed this session (paper trading day 1 — continued)
+### Priority 1 — More paper trading data with the tuned veto
+Run V2 for a week and re-evaluate. Specifically watch:
+- Did the 0.25 ATR veto unblock SIRI-style trend-continuation trades?
+- Did sector concentration tracking actually fire (i.e. block a 3rd entry in a sector)?
+- Are the small-cap "always choppy" symbols (F, SOFI, LYFT, UBER, HOOD, NIO,
+  RIVN, AAL, CLF, SNAP, COIN) ever leaving choppy regime, or are they dead weight?
 
-- [x] Tokyo Night color scheme in TUI (blue/cyan/green/yellow/orange/red/purple on dark)
-- [x] Anvil logo updated to Tokyo Night gradient (cyan → blue → dim)
-- [x] Bot log panel now polls GetLogs every 2s — scan summaries visible without entering a position
-- [x] Expanded tier2 symbol universe (+10 names); trimmed 5 dead/illiquid tickers (PARA, WBA, X, NOK, GOLD)
-- [ ] Single-terminal daemon launch from TUI — deferred, needs more thought
+### Priority 2 — True multi-leg iron condors
+Single-leg directional contracts → 4-leg defined-risk condors.
+Estimated 2–3 focused sessions. Full work breakdown:
 
-## Completed this session (paper trading day 2 — 2026-04-06)
+**Prerequisite (manual):** request multi-leg spread approval on Alpaca paper
+account. Without it the multi-leg endpoint returns 403.
 
-- [x] Revised confluence scoring — widened all signal thresholds using quant methodology:
-  - EMA proximity: 0.5% → 1.5% tolerance (realistic pullback depth)
-  - RSI call zone: 35–50 → 30–55; put zone: 50–65 → 45–70
-  - ADX score threshold: >25 → ≥20 (fires in choppy/transitional markets)
-  - BBand extreme: 1% → 2% tolerance
-  - Choppy regime: was blocking all trades → now scores as RangeBound (iron condors thrive in choppy markets)
-- [x] Updated config.toml: adx_trend_threshold 25→22, adx_no_trend_threshold 20→17, min_confluence_score 8→6
-- [x] Added `scan_results` DB table — every scored symbol logged with regime/score/direction/outcome
-- [x] strategy.rs: replaced all `info!()` with `log_tx.send()` so scores are visible in TUI and DB
-- [x] Updated strategy doc (Section 3 regime table, Section 5 scoring table + entry procedure)
+**Code work:**
+1. `orders.rs` — swap single-leg `POST /v2/orders` for multi-leg
+   (`order_class: "mleg"`, `legs: [...]` × 4 with `ratio_qty`, `side`, `position_intent`).
+2. `strategy.rs` contract selection — pick 4 strikes (short call + long call wing
+   + short put + long put wing) at specified deltas.
+3. `EntryConfig` — new fields: `short_delta` (~0.20), `wing_width_pct` (~5%),
+   `min_credit_pct_of_width`.
+4. Sizing — max loss = (wing width × 100) − credit received; size based on that,
+   not premium paid. Different cost model from current `max_position_usd`.
+5. Entry logic — condors are *neutral*; current trend-aware scoring doesn't
+   apply. Either (a) only trade condors in range_bound regime, or (b) use
+   directional vertical spreads in trending regimes and condors in range
+   (= two strategies under one roof).
+6. Exit monitor — 50% max profit target, 2× credit stop, 21 DTE mechanical close.
+7. DB `trade_log` — add `position_id` grouping for the 4 legs.
+8. `OpenPositionMeta` — currently keyed by single contract; needs 4-leg structure.
+9. Web UI — `PositionsPanel` collapse 4 legs into one row with short/long strike display.
 
-## Completed this session (paper trading day 3 — 2026-04-08)
-
-- [x] Fixed TUI PnL panel: was showing 1M cumulative as "today", month/year hardcoded 0.0
-  - today = equity[-1] - equity[-2] from 1M daily history
-  - month = profit_loss[-1] from 1M query (cumulative)
-  - year  = profit_loss[-1] from 1A query (best-effort, falls back to 0)
-- [x] Removed [E] export keybinding from TUI (keybindings bar + help overlay)
-
-## Next session — resume here (Friday 2026-04-11)
-
-## Completed this session (week 2 prep — 2026-04-11)
-
-- [x] Bug fix: EMA50 break exit now gated to market hours (9:30–16:05 ET) — was firing at midnight on stale prices
-- [x] Bug fix: min_hold_hours = 8.0 added — stop-loss won't arm until position held 8h; emergency stop (-50%) bypasses gate
-- [x] Bug fix: was_emergency correctly recorded in day_trades DB (was always false)
-- [x] Bug fix: emergency_stop added as explicit exit reason (was previously just stop_loss at -50%)
-- [x] Week 2 tuning: min_confluence_score raised 6 → 7 (week 1 showed too many weak choppy entries)
-- [x] Week 2 tuning: removed AMZN, AMD, MARA, INTC, VALE from symbol universe (avg score 3.0–3.7)
-- [x] PDT bug (false alarm): PDT correctly blocked at limit; NIO was allowed through as emergency stop (-54% > 50% threshold)
-
-## Completed this session (v2.1 strategy implementation + cleanup — 2026-04-11)
-
-- [x] Added v2.1 EntryConfig fields: trend_min_score, range_min_score, choppy_min_score, allow_choppy,
-      extreme_proximity_atr, cooldown_after_close_hours, bb_width_min_pct, ema_slope_lookback_bars
-- [x] Rewrote confluence_score with regime-specific signal sets:
-      - Trend (max 12): EMA9/20 touch, RSI zone, MACD hist inflection, higher-low/lower-high, volume contraction, ADX strength
-      - Range/Choppy (max 10): band touch, RSI extreme, reversal candle, distance from mean, volume spike
-- [x] Updated detect_regime to require +DI/-DI direction, EMA20 slope, BB width ≥ 5% for RangeBound
-- [x] Added BarContext struct (high, low, open, 5d extremes, 20d extremes, MACD hist prev)
-- [x] Added extreme proximity veto — rejects call if high within 0.5 ATR of 20d high, put if low near 20d low
-- [x] Added cooldown veto — no new entries in same underlying within 4h of closing a position
-- [x] Regime-specific sizing: trend 7-8=0.5×, 9-10=0.75×, 11-12=1.0×; range 6=0.5×, 7-8=0.75×, 9-10=1.0×
-- [x] AppState: added last_close_by_underlying for cooldown tracking
-- [x] order_poller.rs: records close timestamp on confirmed fill
-- [x] Removed old ferrum-iron-conduit-strategy.md (v2.0); renamed _v2.md → ferrum-iron-conduit-strategy.md (v2.1 is now canonical)
-- [x] Updated README with v2.1 strategy summary: three-stage gate, regime table, entry thresholds, exit priority table
-
-## Completed this session (V1 sign-off + v2.2 — 2026-04-20)
-
-- [x] Week 2 data analysis: 6,856 scans, 23 entries (0.34%), realized **+$78** (LYFT +$127, SOFI −$42, SIRI −$7)
-- [x] v2.2 strategy tuning: `trend_min_score` 7 → 6 (HOOD trending_down avg 6.16 was the most-missed setup)
-- [x] Symbol pruning: removed PFE (range avg 0.8) and PLTR (range avg 0.31)
-- [x] Strategy doc bumped to v2.2 with week-2 changelog entry
-- [x] README updated: symbol universe, threshold table, file list
-- [x] Week 2 report written: `docs/week-2-report-2026-04-20.md`
-- [x] Alpaca Algo Trader Plus rate-limit profile applied:
-    - `market_data_cooldown` 4s → 0s
-    - TUI poll intervals: positions/fills 30s → 10s, PnL 120s → 30s
-    - Daemon `fill_sync_task` 60s → 15s
-    - Stripped legacy free-tier comments
-- [x] V1 merged to main
-
-## Completed this session (V2 web app — 2026-04-21)
-
-- [x] Removed ferrum-tui crate entirely (ratatui/crossterm deps dropped from workspace)
-- [x] Created ferrum-web crate — Axum HTTP server on port 3000
-  - All IPC commands forwarded via REST (status, pnl, positions, fills, pdt, clock, logs, equity)
-  - SSE `/api/stream` endpoint — polls daemon every 2s, broadcasts new LogEvents to clients
-  - `POST /api/mode` — writes mode to config.toml, returns restart_required: true
-  - Serves built React files from `web/dist/` via ServeDir
-  - CORS permissive — allows GitHub Pages origin
-- [x] Created `web/` — React 18 + TypeScript + Vite dashboard
-  - Tokyo Night dark theme (CSS variables, all custom CSS — no UI libraries)
-  - Header: gradient logo, pulsing status dot, mode chip, market status, PDT counter
-  - Positions panel: CALL/PUT badges, P&L bar (green/red gradient, ±50% cap)
-  - P&L panel: today/month/year stat cards + Recharts equity area chart
-  - Fills panel: recent fills with BUY/SELL badges, time-ago
-  - Log stream: SSE live logs, level-colored badges, auto-scroll (500-entry ring buffer)
-  - Mode switch: Paper↔Live toggle with confirm dialog + restart-required banner
-  - Controls: Start/Stop in header
-- [x] Updated daemon: removed V1 live-trading hard block; ToggleMode writes config.toml
-- [x] Added `GetEquityHistory` IPC command + daemon handler (Alpaca portfolio history)
-- [x] GitHub Actions workflow: `.github/workflows/deploy.yml` — builds and deploys to Pages on push to main
-- [x] README updated with new quickstart, dev mode, live trading instructions
-
-## Completed this session (V2 follow-ups + data-driven tune — 2026-04-21)
-
-- [x] **Stop button fix** — added `stop_notify: Arc<Notify>` to AppState; IPC `Stop`
-      pings it and strategy loop `tokio::select!`s sleep vs notify, so Stop is
-      instant instead of waiting out the 60s scan interval. UI now fast-polls
-      status for 10s after Stop click to surface the Running → Stopping → Idle
-      transition inside the 5s default polling interval.
-- [x] **Market close indicator** — verified fix (displays `clock.next_change` directly)
-- [x] **Extreme proximity veto tuned** — 0.5 ATR was blocking 100% of SIRI trending_up
-      threshold hits today (40 vetoes, 0 entries). Dropped to 0.25 ATR so
-      legitimate trend-continuation near-highs get through, while literal
-      at-the-extreme climax entries are still blocked.
-- [x] **Sector concentration tracking wired** — added `[symbols.sectors]` map in
-      config; `RiskGuard::with_open_underlyings()` builds sector counts from open
-      positions; `check_entry` blocks new entries whose sector is already at
-      `max_sector_positions` (currently 2).
-- [x] **Live-mode hard block removed from risk.rs** — was still rejecting all live
-      entries (stale V1 gate). Live is now gated only at daemon startup via
-      `live.enabled`, matching the stated V2 design.
-- [x] **Chain data gaps investigated** — week 2 was 0.7%, today 0.14% — not a
-      systemic problem. Small improvement: when Alpaca returns `null` OI we now
-      pass the contract through instead of treating it as 0 (the bid/ask spread
-      check in the snapshot step is the real liquidity gate). Also added context
-      to the `no_contracts` log line (total returned, DTE range, OI min).
-- [x] **TODO "To run" section updated** — dropped `ferrum-tui`, added the
-      `ferrum-web` + Vite dev-server workflow.
-
-## Today's data analysis (2026-04-21, first day on Alpaca Plus 1-min scans)
-
-2109 scans, 0 entries, 0 fills. Breakdown:
-
-| Outcome | Count | % |
-|---|---|---|
-| choppy (allow_choppy=false) | 1311 | 62% |
-| below_threshold | 755 | 36% |
-| extreme_proximity veto | 40 | 2% |
-| no_contracts | 3 | 0.14% |
-
-Key finding: **extreme_proximity was the only blocker for the single symbol
-that actually hit threshold**. SIRI trending_up scored 6 forty times — every
-one rejected because today's high was within 0.5 ATR of the 20d high. Tuned
-to 0.25 ATR (see config note).
-
-Secondary observation: 62% of scans were in choppy regime (allow_choppy=false).
-Most of the tier2 small-caps (F, SOFI, LYFT, UBER, HOOD, NIO, RIVN, AAL, CLF,
-SNAP, COIN) scored 0 all day — they sit in choppy most of the time. With
-`allow_choppy = true` and a high floor (8/10), we'd unlock a lot of
-mean-reversion setups, but that's a risk the user has been deliberately avoiding.
-
-## 🐛 Active bugs (fix next)
-
-(none open — verify stop/clock fixes on next live run)
-
-## Next session — V2 starting points
-
-### Priority 1 — Web app (replaces TUI) ✅ DONE
-TUI is being scrapped. Replace with a web-based client:
-- Axum HTTP layer in front of the daemon IPC (replaces unix socket as the external interface)
-- Web frontend: real-time positions, PnL, bot status, log stream, start/stop controls
-- ferrum-tui crate stays in workspace but is no longer the primary UI
-- Design decision pending: SSE/WebSocket for live data push vs polling
-
-### Priority 2 — Sector concentration tracking ✅ DONE (2026-04-21)
-
-### Priority 3 — Chain data gaps ✅ INVESTIGATED (2026-04-21)
-Not systemic — <1% of scans. Logged richer diagnostics for next occurrence.
-
-### Priority 4 — True multi-leg iron condors (defer to dedicated session)
-
-Scope is a full strategy rewrite. Prerequisites and work items:
-
-**Prerequisite (manual):** request multi-leg spread approval on Alpaca. Paper
-account needs this enabled separately from equity options — without it the
-multi-leg order endpoint returns 403.
-
-**Code changes required:**
-1. `orders.rs` — swap single-leg `POST /v2/orders` for multi-leg format
-   (`order_class: "mleg"`, `legs: [...]` with 4 entries + `ratio_qty`, `side`,
-   `position_intent`).
-2. `strategy.rs` contract selection — pick 4 strikes per signal (short call +
-   long call wing + short put + long put wing) at specified deltas, not just
-   one directional contract.
-3. `EntryConfig` — new fields: `short_delta` (e.g. 0.20), `wing_width_pct`
-   (e.g. 5% of underlying), `min_credit_pct_of_width`.
-4. Sizing — max loss = (wing width × 100) − credit received; size based on
-   that, not premium paid. Totally different from current `max_position_usd`
-   cost model.
-5. Entry logic — iron condors are *neutral*; current trend-aware scoring
-   doesn't apply. Either (a) only trade condors in range_bound regime, or
-   (b) use directional vertical spreads in trending regimes and condors in
-   range, which is really two strategies under one roof.
-6. Exit monitor — 50% max profit target (standard for condors), 2× credit
-   stop loss, 21 DTE mechanical close (gamma risk). All different from
-   current trailing-activation logic.
-7. DB `trade_log` — needs a `position_id` grouping for the 4 legs so
-   reporting works.
-8. `OpenPositionMeta` — currently keyed by single contract symbol; needs to
-   represent a 4-leg structure.
-9. Web UI — `PositionsPanel` renders per-contract rows; needs to collapse
-   the 4 legs of a condor into one row with short/long strike display.
-
-Realistic estimate: 2–3 focused sessions.
+### Priority 3 — Homelab deployment
+Long-term: run daemon + web on a homelab box, access dashboard from LAN.
+- Decide on supervision (systemd unit vs. Docker)
+- LAN-only CORS lockdown
+- Persist `data/` (SQLite, logs) on host volume
 
 ## To run
 
@@ -257,7 +60,7 @@ cargo run -p ferrum-daemon      # terminal 1 — leave running
 cargo run -p ferrum-web         # terminal 2 — Axum server on :3000
 cd web && npm run dev           # terminal 3 — Vite dev server, opens browser
 
-# Production: the web crate serves the built React bundle (web/dist/) directly
+# Production: ferrum-web serves the built React bundle directly
 cd web && npm run build
-cargo run -p ferrum-web         # now serves dashboard on http://localhost:3000
+cargo run -p ferrum-web         # dashboard on http://localhost:3000
 ```

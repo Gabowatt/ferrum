@@ -9,3 +9,6 @@ config.toml
 # Web app
 web/node_modules/
 web/dist/
+
+# Claude Code worktrees
+.claude/worktrees/

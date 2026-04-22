@@ -3,7 +3,6 @@ members = [
     "crates/ferrum-core",
     "crates/ferrum-daemon",
     "crates/ferrum-web",
-    "crates/ferrum-export",
 ]
 resolver = "2"
 
@@ -19,5 +18,3 @@ sqlx               = { version = "0.8", features = ["sqlite", "runtime-tokio", "
 async-trait        = "0.1"
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap               = { version = "4", features = ["derive"] }
-anyhow             = "1"

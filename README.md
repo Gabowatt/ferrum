@@ -1,59 +1,40 @@
 # ferrum
 
-Quant-level options trading bot + TUI, powered by Alpaca Trading.
+Quant-level options trading bot with a React dashboard, powered by Alpaca Trading.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Phase 1                                                            │
-│                                                                     │
-│   ┌─────────────────┐      IPC (unix socket)     ┌──────────────┐  │
-│   │   ferrum-tui    │ ◄──────────────────────── ►│              │  │
-│   │  ratatui · TUI  │                            │              │  │
-│   └─────────────────┘                            │              │  │
-│                                                  │  ferrum-     │  │
-│   ┌─────────────────┐                            │  daemon      │  │
-│   │  config.toml    │ ──────────────────────────►│              │  │
-│   │  keys · params  │                            │  ┌─────────┐ │  │
-│   └─────────────────┘                            │  │Strategy │ │  │
-│                                                  │  │ engine  │ │  │
-│   ┌─────────────────┐                            │  ├─────────┤ │  │
-│   │   local DB      │ ◄─────────────────────── ► │  │  State  │ │  │
-│   │ SQLite · fills  │                            │  │ manager │ │  │
-│   └─────────────────┘                            │  ├─────────┤ │  │
-│                                                  │  │  Risk   │ │  │
-│                                                  │  │  guard  │ │  │
-│                                                  │  ├─────────┤ │  │
-│                                                  │  │   IPC   │ │  │
-│                                                  │  │ server  │ │  │
-│                                                  └──┴────┬────┘ │  │
-│                                                          │       │  │
-│                                                          ▼       │  │
-│                                                 ┌──────────────┐ │  │
-│                                                 │  Alpaca API  │ │  │
-│                                                 │ paper ↔ live │ │  │
-│                                                 │ + options    │ │  │
-│                                                 │   data       │ │  │
-│                                                 └──────────────┘ │  │
-│                                                                     │
-├─────────────────────────────────────────────────────────────────────┤
-│  Phase 2 (V2 — future)                                             │
-│                                                                     │
-│   ┌─────────────────┐    REST (hosted anywhere)  ┌──────────────┐  │
-│   │   Web app       │ ◄─────────────────────────►│  Axum HTTP   │  │
-│   │ remote config   │                            │  API layer   │  │
-│   └─────────────────┘                            └──────┬───────┘  │
-│                                                         │           │
-│                                                    connects to      │
-│                                                    daemon IPC       │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────┐    HTTP + SSE     ┌──────────────────┐
+│  React dashboard     │ ◄─────────────── ►│  ferrum-web      │
+│  (Tokyo Night theme) │                   │  Axum + SSE      │
+└──────────────────────┘                   └────────┬─────────┘
+                                                    │ unix socket IPC
+                                                    ▼
+┌─────────────────┐                        ┌────────────────────┐
+│  config.toml    │ ──────────────────────►│  ferrum-daemon     │
+│  keys · params  │                        │ ┌────────────────┐ │
+└─────────────────┘                        │ │ Strategy loop  │ │
+                                           │ ├────────────────┤ │
+┌─────────────────┐                        │ │ Exit monitor   │ │
+│  local SQLite   │ ◄────────────────────► │ ├────────────────┤ │
+│  fills · logs   │                        │ │ Risk + PDT     │ │
+└─────────────────┘                        │ ├────────────────┤ │
+                                           │ │  IPC server    │ │
+                                           └─┴───────┬────────┘ │
+                                                     │
+                                                     ▼
+                                            ┌────────────────┐
+                                            │  Alpaca API    │
+                                            │ paper ↔ live   │
+                                            │  + options     │
+                                            └────────────────┘
 ```
 
 **Key design decisions:**
-- The daemon runs independently — TUI and (eventually) web app are just clients
-- Closing the TUI does **not** stop the bot
-- All external calls go through the daemon only — never from the TUI directly
+- The daemon runs independently — the web UI is just a client
+- Closing the browser or web server does **not** stop the bot
+- All external calls go through the daemon only — never from the UI directly
 - Options chain data comes directly from Alpaca (no Polygon dependency)
 
 ## Workspace structure
@@ -68,8 +49,7 @@ ferrum/
 ├── crates/
 │   ├── ferrum-core/        # shared types, traits, indicators, errors
 │   ├── ferrum-daemon/      # core background service
-│   ├── ferrum-web/         # Axum HTTP server + SSE (replaces TUI)
-│   └── ferrum-export/      # tax/CSV export tooling
+│   └── ferrum-web/         # Axum HTTP server + SSE (replaces TUI)
 └── docs/
     ├── ferrum-build-plan.md              # phase-by-phase build plan
     ├── ferrum-iron-conduit-strategy.md   # full strategy specification (v2.2)
