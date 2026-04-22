@@ -214,7 +214,7 @@ pub async fn run_strategy_loop(handle: Arc<StrategyHandle>, state: Arc<AppState>
                                 continue;
                             }
 
-                            submit_signal_orders(&state, &signal).await;
+                            submit_signal_orders(&state, strategy_id, &signal).await;
                         }
                         Err(e) => {
                             let _ = state.log_tx.send(LogEvent::risk(format!("[{strategy_id}] blocked: {e}")));
@@ -252,7 +252,11 @@ async fn interruptible_sleep(state: &AppState, dur: Duration) {
 }
 
 /// Submit orders for all legs in a signal and track the position.
-async fn submit_signal_orders(state: &AppState, signal: &Signal) {
+///
+/// `strategy_id` tags every resulting `OpenPositionMeta` and trade_log row so
+/// downstream attribution (P&L by strategy, UI badges, exit dispatch) can
+/// route correctly. For Forge each signal yields one leg / one position.
+async fn submit_signal_orders(state: &AppState, strategy_id: &'static str, signal: &Signal) {
     let (underlying, legs) = match signal {
         Signal::EnterLong  { symbol, legs } => (symbol.as_str(), legs),
         Signal::EnterShort { symbol, legs } => (symbol.as_str(), legs),
@@ -280,13 +284,14 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
         match orders::submit_limit_order(&state.client, &leg.contract, side, leg.qty, limit_price).await {
             Ok(order) => {
                 let _ = state.log_tx.send(LogEvent::order(format!(
-                    "submitted {} {} {} @ ${:.2} → order id {}",
+                    "[{strategy_id}] submitted {} {} {} @ ${:.2} → order id {}",
                     side, leg.qty, leg.contract, limit_price, order.id
                 )));
 
                 // Log to DB
                 let direction = if leg.contract.contains('C') { "call" } else { "put" };
                 let _ = state.db.insert_trade_log(
+                    strategy_id, None,
                     &leg.contract, underlying, direction, "buy",
                     limit_price, leg.qty as i64,
                     None, None, None, None, None, None, None,
@@ -294,6 +299,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
 
                 // Track position
                 let meta = OpenPositionMeta {
+                    strategy_id,
                     contract:             leg.contract.clone(),
                     underlying:           underlying.to_string(),
                     direction:            direction.to_string(),
@@ -314,7 +320,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
             }
             Err(e) => {
                 let _ = state.log_tx.send(LogEvent::error(format!(
-                    "order submit failed for {}: {e}", leg.contract
+                    "[{strategy_id}] order submit failed for {}: {e}", leg.contract
                 )));
             }
         }
@@ -535,6 +541,7 @@ impl Strategy for ForgeStrategy {
     fn id(&self) -> &'static str { "forge" }
 
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
+        let strategy_id = self.id();  // tags every scan_result row this cycle writes
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;
         let entry    = &cfg.strategy.entry;
@@ -638,7 +645,7 @@ impl Strategy for ForgeStrategy {
                         "[forge] {symbol}: choppy regime — no trade (allow_choppy=false)",
                     )));
                     let _ = state.db.insert_scan_result(
-                        symbol, &snap.regime.to_string(), 0, None, "choppy",
+                        strategy_id, symbol, &snap.regime.to_string(), 0, None, "choppy",
                     ).await;
                     continue;
                 }
@@ -667,7 +674,7 @@ impl Strategy for ForgeStrategy {
                     "[forge] {symbol}: score {score} < min {min_score} — skip",
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "below_threshold",
                 ).await;
                 continue;
@@ -687,7 +694,7 @@ impl Strategy for ForgeStrategy {
                         "[forge] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
                     )));
                     let _ = state.db.insert_scan_result(
-                        symbol, &snap.regime.to_string(), score as i32,
+                        strategy_id, symbol, &snap.regime.to_string(), score as i32,
                         Some(dir_str), "extreme_proximity",
                     ).await;
                     continue;
@@ -750,7 +757,7 @@ impl Strategy for ForgeStrategy {
                     entry.dte_min, entry.dte_max, liq.min_open_interest,
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "no_contracts",
                 ).await;
                 continue;
@@ -875,7 +882,7 @@ impl Strategy for ForgeStrategy {
                      mid=${mid:.2} score={score}/{max_score} size={size_factor:.2} delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "entered",
                 ).await;
 
@@ -891,7 +898,7 @@ impl Strategy for ForgeStrategy {
                 });
             } else {
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "no_contracts",
                 ).await;
             }

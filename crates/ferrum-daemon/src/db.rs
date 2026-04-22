@@ -364,18 +364,19 @@ impl Database {
     /// outcome: "entered" | "below_threshold" | "no_contracts" | "risk_blocked" | "choppy"
     pub async fn insert_scan_result(
         &self,
-        symbol:    &str,
-        regime:    &str,
-        score:     i32,
-        direction: Option<&str>,
-        outcome:   &str,
+        strategy_id: &str,
+        symbol:      &str,
+        regime:      &str,
+        score:       i32,
+        direction:   Option<&str>,
+        outcome:     &str,
     ) -> Result<(), FerrumError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO scan_results (timestamp, symbol, regime, score, direction, outcome)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scan_results (timestamp, symbol, regime, score, direction, outcome, strategy_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&now).bind(symbol).bind(regime).bind(score).bind(direction).bind(outcome)
+        .bind(&now).bind(symbol).bind(regime).bind(score).bind(direction).bind(outcome).bind(strategy_id)
         .execute(&self.pool).await?;
         Ok(())
     }
@@ -399,8 +400,14 @@ impl Database {
 
     // ── Trade log ─────────────────────────────────────────────────────────────
 
+    /// Insert a trade log entry. `strategy_id` tags the row with the strategy
+    /// that opened/closed the position; `position_id` is reserved for Phase 3
+    /// to group the 4 legs of an iron condor under a single id (Forge passes
+    /// `None` since its positions are single-leg).
     pub async fn insert_trade_log(
         &self,
+        strategy_id:     &str,
+        position_id:     Option<&str>,
         contract_symbol: &str,
         underlying:      &str,
         direction:       &str,
@@ -419,13 +426,15 @@ impl Database {
         sqlx::query(
             "INSERT INTO trade_log
              (contract_symbol, underlying, direction, action, timestamp, price, quantity,
-              confluence_score, regime, iv_rank, delta, dte, exit_reason, pnl)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              confluence_score, regime, iv_rank, delta, dte, exit_reason, pnl,
+              strategy_id, position_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(contract_symbol).bind(underlying).bind(direction).bind(action)
         .bind(&now).bind(price).bind(quantity)
         .bind(confluence_score).bind(regime).bind(iv_rank).bind(delta)
         .bind(dte).bind(exit_reason).bind(pnl)
+        .bind(strategy_id).bind(position_id)
         .execute(&self.pool).await?;
         Ok(())
     }

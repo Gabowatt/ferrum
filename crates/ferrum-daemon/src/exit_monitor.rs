@@ -202,6 +202,7 @@ async fn check_exits(state: &AppState) -> Result<(), FerrumError> {
                 };
                 let est_pnl = (current_price - entry_price) * close_qty as f64 * 100.0;
                 let _ = state.db.insert_trade_log(
+                    meta.strategy_id, None,
                     &ap.symbol, &meta.underlying, &meta.direction,
                     "close_pending", current_price, close_qty as i64,
                     Some(meta.confluence_score as i64),

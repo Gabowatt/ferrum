@@ -257,3 +257,29 @@ Forward-looking work lives in `/TODO.md`.
       `[forge]` already from Commit A), same risk + PDT path.
 - [x] Build clean, zero warnings.
 
+## V2.1 Phase 1 — strategy_id threaded through writers (2026-04-21)
+
+- [x] `OpenPositionMeta` gains `strategy_id: &'static str` (first field). The
+      static lifetime falls out of `Strategy::id()` returning `&'static str`,
+      so we never allocate per-position just to remember which strategy
+      opened it.
+- [x] `db::insert_scan_result` and `db::insert_trade_log` take `strategy_id`
+      explicitly. `insert_trade_log` also takes `position_id: Option<&str>`
+      now — Phase 1 always passes `None`; Phase 3 will use it to group the
+      four legs of an Iron Condor under one synthetic position id.
+- [x] Strategy scan loop binds `let strategy_id = self.id();` once at the top
+      of `scan()` and passes it to all six `insert_scan_result` callsites
+      (every veto + the eventual signal). One source of truth per scan cycle.
+- [x] `submit_signal_orders(...)` takes `strategy_id` and stamps it onto the
+      new `OpenPositionMeta` and the `insert_trade_log` open-row write — so
+      every entry row in `trade_log` is attributed without relying on the
+      DB-side default.
+- [x] `exit_monitor.rs` and `order_poller.rs` close-side `insert_trade_log`
+      calls forward `meta.strategy_id` (and `None` for `position_id`).
+- [x] Fills (Alpaca activities API) keep the DB-side `DEFAULT 'forge'`. Adding
+      explicit per-fill attribution needs an `order_id → strategy_id` lookup
+      map — deferred to Phase 2 alongside the IPC live-toggle work.
+- [x] Build clean, zero warnings. Phase 1 of the multi-strategy plan is
+      complete; runtime behavior is identical to V2 but the daemon is now
+      shaped for N strategies.
+

@@ -4,7 +4,7 @@
 
 ## Status
 
-- **Active branch**: `V2.1` (multi-strategy refactor) — being created next.
+- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 in progress; Forge rename + DB migration + StrategyHandle registry + strategy_id threading shipped.
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
 - **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR).
 - **Build**: clean, zero warnings (`cargo build --workspace`).
@@ -29,8 +29,8 @@ Make the daemon multi-strategy-shaped while it still runs only Forge.
 - [x] DB migration: `strategy_id` (default 'forge') on fills/trade_log/scan_results; nullable `position_id` on trade_log (Phase 3 leg grouping). Idempotent ALTER via PRAGMA inspection.
 - [x] Promote `Strategy` trait with `id()`; add `StrategyHandle { id, scan_interval, enabled, strategy }` and `build_strategies(&AppConfig)` factory.
 - [x] `AppState.strategies: Vec<Arc<StrategyHandle>>`; IPC `Start` spawns one supervisor loop per handle. `Stopping → Idle` coordinated via `active_strategy_loops` AtomicUsize counter.
-- [ ] Add `strategy_id` to `OpenPositionMeta`.
-- [ ] Pipe `strategy_id` through order submission → fill records → trade log.
+- [x] Add `strategy_id` to `OpenPositionMeta`.
+- [x] Pipe `strategy_id` through order submission → trade log writes (entry, close-pending, close-confirmed). Fills row tagging deferred — Alpaca activities come back without an originating strategy and the DB-side `DEFAULT 'forge'` keeps Phase 1 correct; will revisit in Phase 2 with an order_id → strategy_id map.
 - [ ] (Phase 2 prep) `Strategy::check_exit` — deferred until Iron Condor lands and needs strategy-specific exits.
 
 ### Phase 2 — Live toggle + UI plumbing

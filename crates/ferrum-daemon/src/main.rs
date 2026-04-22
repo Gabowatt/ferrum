@@ -24,6 +24,10 @@ use crate::strategy::StrategyHandle;
 /// In-memory metadata for a position we have opened.
 #[derive(Debug, Clone)]
 pub struct OpenPositionMeta {
+    /// Identifier of the strategy that opened this position. Static lifetime
+    /// — comes from `Strategy::id()`. Threaded through to `trade_log.strategy_id`
+    /// at open + close time so DB attribution survives daemon restarts.
+    pub strategy_id:           &'static str,
     pub contract:              String,
     pub underlying:            String,
     pub direction:             String,
