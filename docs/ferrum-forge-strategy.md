@@ -1,7 +1,7 @@
-# Ferrum Trading Strategy: Iron Conduit
+# Ferrum Trading Strategy: Forge
 
 > **Version:** 2.2  
-> **Codename:** `iron-conduit`  
+> **Codename:** `forge` (renamed from `iron-conduit` in V2.1 — the old name was misleading; this strategy buys long single-leg calls/puts, not iron condors)  
 > **Account Size:** $1,000  
 > **Account Type:** Cash (avoids margin requirements, simplifies PDT handling)  
 > **Platform:** Alpaca Trading API (paper → live via Algo Trader Plus)  
@@ -950,7 +950,7 @@ Alpaca allows up to 200 API calls/min on free plan and 1,000/min on Algo Trader 
 
 ## 13. Config Reference
 
-Complete `config.toml` for the iron-conduit strategy:
+Complete `config.toml` for the Forge strategy (the live `config.toml` may differ — this section is the v2.2 reference template):
 
 ```toml
 [alpaca.paper]
@@ -979,10 +979,10 @@ min_daily_volume      = 50
 max_bid_ask_spread    = 0.20
 
 # ──────────────────────────────────────
-# Strategy: Iron Conduit
+# Strategy: Forge
 # ──────────────────────────────────────
 [strategy]
-name                   = "iron-conduit"
+name                   = "forge"
 scan_interval_secs     = 300
 chain_scan_interval    = 900
 exit_check_interval    = 60

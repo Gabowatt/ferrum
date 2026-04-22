@@ -52,16 +52,20 @@ ferrum/
 │   └── ferrum-web/         # Axum HTTP server + SSE (replaces TUI)
 └── docs/
     ├── ferrum-build-plan.md              # phase-by-phase build plan
-    ├── ferrum-iron-conduit-strategy.md   # full strategy specification (v2.2)
+    ├── ferrum-forge-strategy.md          # Forge strategy specification (v2.2)
+    ├── multi-strategy-plan.md            # V2.1 design — registry + Iron Condor
     ├── week-1-report-2026-04-11.md       # paper trading week 1 debrief
     └── week-2-report-2026-04-20.md       # paper trading week 2 debrief + V1 sign-off
 ```
 
 The build plan and strategy doc in `docs/` are the authoritative references. Each Claude Code session starts by reading the relevant doc alongside `git log --oneline -10` and `TODO.md`.
 
-## Strategy: Multi-Regime Iron Condor v2.2
+## Strategy: Forge — Multi-Regime Long Options v2.2
 
-> Full specification: [`docs/ferrum-iron-conduit-strategy.md`](docs/ferrum-iron-conduit-strategy.md)
+> Full specification: [`docs/ferrum-forge-strategy.md`](docs/ferrum-forge-strategy.md)
+>
+> **Forge** is the long single-leg confluence strategy below. The 4-leg defined-risk
+> **Iron Condor** ships in V2.1 Phase 3 as a separate parallel strategy.
 
 ### Overview
 
@@ -134,7 +138,7 @@ PFE and PLTR were dropped after week 2 (range_bound averages 0.8 and 0.31 — ne
 
 ## Quickstart
 
-1. Create `config.toml` with your Alpaca keys (see `docs/ferrum-iron-conduit-strategy.md` §13 for the full config reference).
+1. Create `config.toml` with your Alpaca keys (see `docs/ferrum-forge-strategy.md` §13 for the full config reference).
 2. Build the web app once:
    ```bash
    cd web && npm install && npm run build && cd ..

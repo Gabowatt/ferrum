@@ -88,7 +88,7 @@ async fn market_is_open(state: &AppState) -> bool {
 pub async fn run_strategy_loop(state: Arc<AppState>) {
     let entry_interval = Duration::from_secs(state.config.strategy.scan_interval_secs);
 
-    let strategy = IronConduitStrategy::new();
+    let strategy = ForgeStrategy::new();
 
     loop {
         {
@@ -107,11 +107,11 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
             continue;
         }
 
-        let _ = state.log_tx.send(LogEvent::info("[iron-conduit] scan cycle starting"));
+        let _ = state.log_tx.send(LogEvent::info("[forge] scan cycle starting"));
 
         match strategy.scan(&state).await {
             Ok(signals) if signals.is_empty() => {
-                let _ = state.log_tx.send(LogEvent::info("[iron-conduit] no signals this cycle"));
+                let _ = state.log_tx.send(LogEvent::info("[forge] no signals this cycle"));
             }
             Ok(signals) => {
                 for signal in signals {
@@ -145,7 +145,7 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
                 }
             }
             Err(e) => {
-                error!("[iron-conduit] scan error: {e}");
+                error!("[forge] scan error: {e}");
                 let _ = state.log_tx.send(LogEvent::error(format!("scan error: {e}")));
             }
         }
@@ -358,11 +358,14 @@ struct OptionQuote {
     #[serde(rename = "bp")] bid: Option<f64>,
 }
 
-// ── Iron Conduit Strategy ─────────────────────────────────────────────────────
+// ── Forge Strategy ────────────────────────────────────────────────────────────
+// Long single-leg calls/puts on confluence + regime. Renamed from "iron conduit"
+// in V2.1 — the old name was misleading because the code does not trade iron
+// condors. The true 4-leg condor is being added as a separate strategy.
 
-pub struct IronConduitStrategy;
+pub struct ForgeStrategy;
 
-impl IronConduitStrategy {
+impl ForgeStrategy {
     pub fn new() -> Self { Self }
 
     async fn fetch_bars(
@@ -440,7 +443,7 @@ impl IronConduitStrategy {
 }
 
 #[async_trait::async_trait]
-impl Strategy for IronConduitStrategy {
+impl Strategy for ForgeStrategy {
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;
@@ -479,7 +482,7 @@ impl Strategy for IronConduitStrategy {
                     let hours_since = (Utc::now() - closed_at).num_minutes() as f64 / 60.0;
                     if hours_since < cooldown_hours {
                         let _ = state.log_tx.send(LogEvent::info(format!(
-                            "[iron-conduit] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
+                            "[forge] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
                             hours_since, cooldown_hours,
                         )));
                         continue;
@@ -492,14 +495,14 @@ impl Strategy for IronConduitStrategy {
                 match Self::fetch_bars(&state.client, symbol, 90).await {
                     Ok(data) => data,
                     Err(e) => {
-                        let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} bars fetch failed: {e}")));
+                        let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} bars fetch failed: {e}")));
                         continue;
                     }
                 };
 
             if closes.len() < 60 {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len(),
+                    "[forge] {symbol}: insufficient bar history ({} bars)", closes.len(),
                 )));
                 continue;
             }
@@ -513,7 +516,7 @@ impl Strategy for IronConduitStrategy {
                 Some(s) => s,
                 None => {
                     let _ = state.log_tx.send(LogEvent::warn(format!(
-                        "[iron-conduit] {symbol}: snapshot failed",
+                        "[forge] {symbol}: snapshot failed",
                     )));
                     continue;
                 }
@@ -523,13 +526,13 @@ impl Strategy for IronConduitStrategy {
             let ctx = match Self::make_bar_context(&closes, &highs, &lows, &opens, &volumes) {
                 Some(c) => c,
                 None => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol}: bar context failed")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol}: bar context failed")));
                     continue;
                 }
             };
 
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
+                "[forge] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
                 snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx,
                 snap.bbands.width * 100.0,
             )));
@@ -542,7 +545,7 @@ impl Strategy for IronConduitStrategy {
                 None => {
                     // Choppy regime and allow_choppy = false
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol}: choppy regime — no trade (allow_choppy=false)",
+                        "[forge] {symbol}: choppy regime — no trade (allow_choppy=false)",
                     )));
                     let _ = state.db.insert_scan_result(
                         symbol, &snap.regime.to_string(), 0, None, "choppy",
@@ -565,13 +568,13 @@ impl Strategy for IronConduitStrategy {
             };
 
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
+                "[forge] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
                 snap.regime,
             )));
 
             if score < min_score {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: score {score} < min {min_score} — skip",
+                    "[forge] {symbol}: score {score} < min {min_score} — skip",
                 )));
                 let _ = state.db.insert_scan_result(
                     symbol, &snap.regime.to_string(), score as i32,
@@ -591,7 +594,7 @@ impl Strategy for IronConduitStrategy {
                 };
                 if vetoed {
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
+                        "[forge] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
                     )));
                     let _ = state.db.insert_scan_result(
                         symbol, &snap.regime.to_string(), score as i32,
@@ -624,7 +627,7 @@ impl Strategy for IronConduitStrategy {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} contracts fetch failed: {e}")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} contracts fetch failed: {e}")));
                     continue;
                 }
             };
@@ -652,7 +655,7 @@ impl Strategy for IronConduitStrategy {
 
             if filtered_contracts.is_empty() {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter \
+                    "[forge] {symbol}: no contracts passed DTE/OI filter \
                      ({total_returned} returned by Alpaca, DTE {}-{}, OI≥{})",
                     entry.dte_min, entry.dte_max, liq.min_open_interest,
                 )));
@@ -679,7 +682,7 @@ impl Strategy for IronConduitStrategy {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} snapshots fetch failed: {e}")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} snapshots fetch failed: {e}")));
                     continue;
                 }
             };
@@ -729,7 +732,7 @@ impl Strategy for IronConduitStrategy {
 
                 if !iv_engine.is_buyable(iv_result.iv_rank) {
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
+                        "[forge] {symbol} {contract}: IV rank {:.1} too high — skip",
                         iv_result.iv_rank,
                     )));
                     continue;
@@ -778,7 +781,7 @@ impl Strategy for IronConduitStrategy {
                 };
 
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] SIGNAL {symbol} {contract} dir={dir_str} \
+                    "[forge] SIGNAL {symbol} {contract} dir={dir_str} \
                      mid=${mid:.2} score={score}/{max_score} size={size_factor:.2} delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
                 )));
                 let _ = state.db.insert_scan_result(

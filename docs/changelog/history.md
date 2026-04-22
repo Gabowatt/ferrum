@@ -207,3 +207,15 @@ Forward-looking work lives in `/TODO.md`.
 - [x] TODO restructured around the V2.1 phased delivery (registry → toggle UI
       → Iron Condor strategy).
 
+## V2.1 Phase 1 — Forge rename (2026-04-21)
+
+- [x] `IronConduitStrategy` → `ForgeStrategy` in `crates/ferrum-daemon/src/strategy.rs`
+      (struct, impl, instantiation in `run_strategy_loop`).
+- [x] All `[iron-conduit]` log prefixes → `[forge]` (16 sites).
+- [x] `config.toml`: `[strategy] name = "iron-conduit"` → `"forge"`.
+- [x] `docs/ferrum-iron-conduit-strategy.md` → `docs/ferrum-forge-strategy.md`
+      (git-tracked rename); title + codename + §13 config example updated.
+- [x] README: strategy section retitled "Forge — Multi-Regime Long Options v2.2";
+      file references updated; multi-strategy-plan.md added to docs tree.
+- [x] Build verified clean (zero warnings).
+
