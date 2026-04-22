@@ -90,8 +90,16 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
             }
             *s = BotStatus::Running;
             drop(s);
-            let _ = state.log_tx.send(LogEvent::info("strategy loop started"));
-            tokio::spawn(strategy::run_strategy_loop(state.clone()));
+            // V2.1: spawn one supervisor task per registered strategy handle.
+            // Each loop is responsible for its own scan cadence + enable check;
+            // they all observe the global Stopping flag via `stop_notify`.
+            let ids: Vec<&'static str> = state.strategies.iter().map(|h| h.id).collect();
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "strategy loops starting: {}", ids.join(", ")
+            )));
+            for handle in &state.strategies {
+                tokio::spawn(strategy::run_strategy_loop(handle.clone(), state.clone()));
+            }
             IpcResponse::Ok
         }
 

@@ -230,6 +230,30 @@ Forward-looking work lives in `/TODO.md`.
       reboot).
 - [x] Migration SQL verified against a copy of the live `ferrum.db`
       (10,764 existing scan_results rows backfilled to 'forge' as expected).
-- [x] Writers unchanged in this commit — defaults keep them working. Commit E
-      will thread an explicit `strategy_id` parameter through them.
+- [x] Writers unchanged in this commit — defaults keep them working. A later
+      commit threads an explicit `strategy_id` parameter through them.
+
+## V2.1 Phase 1 — Strategy registry + multi-loop supervisor (2026-04-21)
+
+- [x] `Strategy` trait now exposes `id() -> &'static str` (used as the
+      `strategy_id` tag in DB rows + in IPC payloads).
+- [x] New `StrategyHandle { id, scan_interval, enabled: AtomicBool, strategy }`
+      wraps `Arc<dyn Strategy>` for the supervisor. `enabled` is reserved for
+      Phase 2's live-toggle IPC; for now it always starts true.
+- [x] `strategy::build_strategies(&AppConfig) -> Vec<Arc<StrategyHandle>>` is
+      the single source of truth for which strategies the daemon hosts. Phase 1
+      ships only Forge; Phase 3 adds Iron Condor here.
+- [x] `AppState.strategies` carries the registry; `AppState.active_strategy_loops`
+      (`AtomicUsize`) lets multiple supervisor tasks coordinate the
+      `Stopping → Idle` transition without races (last loop out flips the bit).
+- [x] `run_strategy_loop` now takes `Arc<StrategyHandle>` + `Arc<AppState>`,
+      logs every event with the handle's `id`, and gates each cycle on
+      `handle.is_enabled()` so Phase 2 only has to flip the flag.
+- [x] IPC `Start` iterates `state.strategies` and spawns one supervisor task
+      per handle. `Stop` is unchanged — the existing `stop_notify` ping wakes
+      every loop simultaneously.
+- [x] Behavior preserved: with one registered strategy (Forge) the runtime
+      shape matches V2 exactly — same scan cadence, same logs (now prefixed
+      `[forge]` already from Commit A), same risk + PDT path.
+- [x] Build clean, zero warnings.
 

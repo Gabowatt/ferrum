@@ -27,10 +27,11 @@ run in parallel with live UI toggles. Rename the current strategy
 Make the daemon multi-strategy-shaped while it still runs only Forge.
 - [x] Rename `IronConduitStrategy` → `ForgeStrategy`; renamed strategy doc + config section + log prefixes.
 - [x] DB migration: `strategy_id` (default 'forge') on fills/trade_log/scan_results; nullable `position_id` on trade_log (Phase 3 leg grouping). Idempotent ALTER via PRAGMA inspection.
-- [ ] Promote `Strategy` trait (`id`, `scan_interval`, `check_exit`).
-- [ ] Replace single strategy instance with `Vec<Arc<StrategyHandle>>`; one loop per strategy.
+- [x] Promote `Strategy` trait with `id()`; add `StrategyHandle { id, scan_interval, enabled, strategy }` and `build_strategies(&AppConfig)` factory.
+- [x] `AppState.strategies: Vec<Arc<StrategyHandle>>`; IPC `Start` spawns one supervisor loop per handle. `Stopping → Idle` coordinated via `active_strategy_loops` AtomicUsize counter.
 - [ ] Add `strategy_id` to `OpenPositionMeta`.
 - [ ] Pipe `strategy_id` through order submission → fill records → trade log.
+- [ ] (Phase 2 prep) `Strategy::check_exit` — deferred until Iron Condor lands and needs strategy-specific exits.
 
 ### Phase 2 — Live toggle + UI plumbing
 - [ ] `enabled: AtomicBool` per strategy handle; loop checks before each scan.

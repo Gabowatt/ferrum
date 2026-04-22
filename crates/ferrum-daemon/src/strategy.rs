@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::error;
@@ -7,6 +8,7 @@ use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     client::AlpacaClient,
+    config::AppConfig,
     error::FerrumError,
     indicators::{self, BarContext, TradeDirection},
     types::{BotStatus, FillRecord, LegAction, LogEvent, OptionLeg, OrderType, Signal},
@@ -18,11 +20,71 @@ use crate::{
     AppState, OpenPositionMeta,
 };
 
-// ── Strategy trait ────────────────────────────────────────────────────────────
+// ── Strategy trait + registry ─────────────────────────────────────────────────
+//
+// V2.1 multi-strategy refactor: the daemon hosts a registry of strategies
+// (`AppState.strategies`), each running on its own loop. Phase 1 ships with
+// one strategy (Forge); Phase 3 adds Iron Condor.
+//
+// `Strategy` is the trait every strategy implements. `StrategyHandle` wraps
+// an `Arc<dyn Strategy>` together with runtime state the supervisor needs
+// (scan interval, enabled flag for Phase 2 live toggles).
 
 #[async_trait::async_trait]
 pub trait Strategy: Send + Sync {
+    /// Stable, lowercase identifier — used as `strategy_id` in DB rows and
+    /// in IPC payloads. Must match the `[strategies.<id>]` section that will
+    /// be introduced in Phase 2 of the multi-strategy plan.
+    fn id(&self) -> &'static str;
+
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError>;
+}
+
+pub struct StrategyHandle {
+    pub id:            &'static str,
+    pub scan_interval: Duration,
+    /// Live enable/disable. Phase 1 always starts enabled; Phase 2 wires the
+    /// IPC + UI toggle that flips this without restarting the daemon.
+    pub enabled:       AtomicBool,
+    pub strategy:      Arc<dyn Strategy>,
+}
+
+impl StrategyHandle {
+    pub fn new(strategy: Arc<dyn Strategy>, scan_interval: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            id: strategy.id(),
+            scan_interval,
+            enabled: AtomicBool::new(true),
+            strategy,
+        })
+    }
+
+    pub fn is_enabled(&self) -> bool { self.enabled.load(Ordering::Relaxed) }
+
+    #[allow(dead_code)] // wired in Phase 2 when SetStrategyEnabled IPC lands
+    pub fn set_enabled(&self, v: bool) { self.enabled.store(v, Ordering::Relaxed); }
+}
+
+impl std::fmt::Debug for StrategyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StrategyHandle")
+            .field("id", &self.id)
+            .field("scan_interval", &self.scan_interval)
+            .field("enabled", &self.is_enabled())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Build the list of strategy handles registered with the daemon.
+///
+/// Phase 1: only Forge. Phase 3 will add Iron Condor here. The function reads
+/// each strategy's scan interval from `config` so the loop schedule stays
+/// configurable without touching code.
+pub fn build_strategies(config: &AppConfig) -> Vec<Arc<StrategyHandle>> {
+    let forge_interval = Duration::from_secs(config.strategy.scan_interval_secs);
+    vec![
+        StrategyHandle::new(Arc::new(ForgeStrategy::new()), forge_interval),
+    ]
 }
 
 // ── Alpaca clock ─────────────────────────────────────────────────────────────
@@ -83,35 +145,51 @@ async fn market_is_open(state: &AppState) -> bool {
     true
 }
 
-// ── Main strategy loop ────────────────────────────────────────────────────────
+// ── Per-strategy supervisor loop ──────────────────────────────────────────────
+//
+// One task per `StrategyHandle`, spawned by `IpcCommand::Start`. The loop
+// scans on the handle's interval, gates on `BotStatus::Running` and the
+// per-handle `enabled` flag, and exits when status becomes `Stopping`.
+//
+// Stop coordination across N loops:
+//   - `state.active_strategy_loops` counts the number of currently-running
+//     supervisor tasks. Each loop increments on entry and decrements on exit.
+//   - The IPC Stop handler sets status to `Stopping` and pings `stop_notify`,
+//     which wakes every loop's interruptible sleep.
+//   - The last loop to exit (post-decrement counter == 0) flips status from
+//     `Stopping` back to `Idle`. This avoids a race where each loop tried to
+//     write `Idle` independently.
 
-pub async fn run_strategy_loop(state: Arc<AppState>) {
-    let entry_interval = Duration::from_secs(state.config.strategy.scan_interval_secs);
-
-    let strategy = ForgeStrategy::new();
+pub async fn run_strategy_loop(handle: Arc<StrategyHandle>, state: Arc<AppState>) {
+    state.active_strategy_loops.fetch_add(1, Ordering::SeqCst);
+    let strategy_id = handle.id;
 
     loop {
+        // Stop check — break out before any work this cycle.
         {
             let status = state.status.lock().await;
             if *status == BotStatus::Stopping {
-                drop(status);
-                *state.status.lock().await = BotStatus::Idle;
-                let _ = state.log_tx.send(LogEvent::info("strategy loop stopped"));
-                return;
+                break;
             }
+        }
+
+        // Per-handle enable flag (Phase 2 will toggle this live).
+        if !handle.is_enabled() {
+            interruptible_sleep(&state, handle.scan_interval).await;
+            continue;
         }
 
         // Market hours gate
         if !market_is_open(&state).await {
-            interruptible_sleep(&state, entry_interval).await;
+            interruptible_sleep(&state, handle.scan_interval).await;
             continue;
         }
 
-        let _ = state.log_tx.send(LogEvent::info("[forge] scan cycle starting"));
+        let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] scan cycle starting")));
 
-        match strategy.scan(&state).await {
+        match handle.strategy.scan(&state).await {
             Ok(signals) if signals.is_empty() => {
-                let _ = state.log_tx.send(LogEvent::info("[forge] no signals this cycle"));
+                let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] no signals this cycle")));
             }
             Ok(signals) => {
                 for signal in signals {
@@ -127,30 +205,40 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
                         .with_open_underlyings(&open_underlyings);
                     match guard.check_entry(&signal) {
                         Ok(()) => {
-                            let _ = state.log_tx.send(LogEvent::risk("risk guard passed"));
+                            let _ = state.log_tx.send(LogEvent::risk(format!("[{strategy_id}] risk guard passed")));
 
                             // Check we're Running before submitting
                             let running = *state.status.lock().await == BotStatus::Running;
                             if !running {
-                                let _ = state.log_tx.send(LogEvent::info("not running — skipping order"));
+                                let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] not running — skipping order")));
                                 continue;
                             }
 
                             submit_signal_orders(&state, &signal).await;
                         }
                         Err(e) => {
-                            let _ = state.log_tx.send(LogEvent::risk(format!("blocked: {e}")));
+                            let _ = state.log_tx.send(LogEvent::risk(format!("[{strategy_id}] blocked: {e}")));
                         }
                     }
                 }
             }
             Err(e) => {
-                error!("[forge] scan error: {e}");
-                let _ = state.log_tx.send(LogEvent::error(format!("scan error: {e}")));
+                error!("[{strategy_id}] scan error: {e}");
+                let _ = state.log_tx.send(LogEvent::error(format!("[{strategy_id}] scan error: {e}")));
             }
         }
 
-        interruptible_sleep(&state, entry_interval).await;
+        interruptible_sleep(&state, handle.scan_interval).await;
+    }
+
+    // Last loop out flips status to Idle.
+    let remaining = state.active_strategy_loops.fetch_sub(1, Ordering::SeqCst) - 1;
+    let _ = state.log_tx.send(LogEvent::info(format!(
+        "[{strategy_id}] supervisor exited ({remaining} loop(s) still running)"
+    )));
+    if remaining == 0 {
+        *state.status.lock().await = BotStatus::Idle;
+        let _ = state.log_tx.send(LogEvent::info("all strategy loops stopped"));
     }
 }
 
@@ -444,6 +532,8 @@ impl ForgeStrategy {
 
 #[async_trait::async_trait]
 impl Strategy for ForgeStrategy {
+    fn id(&self) -> &'static str { "forge" }
+
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;

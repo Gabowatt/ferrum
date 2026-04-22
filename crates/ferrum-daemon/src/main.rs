@@ -9,6 +9,7 @@ mod risk;
 mod strategy;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::{broadcast, Mutex, Notify};
 use tracing::{error, info};
 
@@ -18,6 +19,7 @@ use ferrum_core::{
     error::FerrumError,
     types::{BotStatus, LogEvent},
 };
+use crate::strategy::StrategyHandle;
 
 /// In-memory metadata for a position we have opened.
 #[derive(Debug, Clone)]
@@ -56,6 +58,15 @@ pub struct AppState {
     pub last_close_by_underlying: Mutex<std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>>,
     /// Pinged when the user requests Stop so the strategy loop can interrupt its sleep.
     pub stop_notify: Arc<Notify>,
+    /// V2.1 multi-strategy: every registered strategy gets one handle here,
+    /// and IPC `Start` spawns one supervisor loop per handle. See
+    /// `strategy::build_strategies` for what goes in this list.
+    pub strategies: Vec<Arc<StrategyHandle>>,
+    /// Live count of currently-running supervisor tasks. Used to coordinate
+    /// the `Stopping → Idle` transition: the last loop to exit (counter == 0)
+    /// flips the bot status, so we don't get a race between N loops each
+    /// trying to set `Idle` independently.
+    pub active_strategy_loops: AtomicUsize,
 }
 
 #[tokio::main]
@@ -105,6 +116,15 @@ async fn main() -> Result<(), FerrumError> {
 
     let (log_tx, _) = broadcast::channel::<LogEvent>(512);
 
+    // Build the strategy registry before AppState (handles need only the
+    // config; they don't depend on AppState itself).
+    let strategies = strategy::build_strategies(&config);
+    info!(
+        "Strategy registry: {} strategy(ies) registered ({})",
+        strategies.len(),
+        strategies.iter().map(|h| h.id).collect::<Vec<_>>().join(", "),
+    );
+
     let state = Arc::new(AppState {
         config,
         client,
@@ -115,6 +135,8 @@ async fn main() -> Result<(), FerrumError> {
         open_positions: Mutex::new(std::collections::HashMap::new()),
         last_close_by_underlying: Mutex::new(std::collections::HashMap::new()),
         stop_notify:    Arc::new(Notify::new()),
+        strategies,
+        active_strategy_loops: AtomicUsize::new(0),
     });
 
     // Persist log events to SQLite — subscribe before the first send.
