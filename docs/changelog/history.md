@@ -219,3 +219,17 @@ Forward-looking work lives in `/TODO.md`.
       file references updated; multi-strategy-plan.md added to docs tree.
 - [x] Build verified clean (zero warnings).
 
+## V2.1 Phase 1 — DB migration for strategy_id (2026-04-21)
+
+- [x] `db.rs::migrate()` now adds `strategy_id TEXT NOT NULL DEFAULT 'forge'`
+      to `fills`, `trade_log`, and `scan_results`, plus nullable `position_id`
+      to `trade_log` (Phase 3 will use it to group condor legs).
+- [x] Fresh DBs get the columns via the `CREATE TABLE` bodies; existing DBs
+      get them via an idempotent `ALTER TABLE` pass that inspects
+      `PRAGMA table_info` first (no SQLite "duplicate column" errors on
+      reboot).
+- [x] Migration SQL verified against a copy of the live `ferrum.db`
+      (10,764 existing scan_results rows backfilled to 'forge' as expected).
+- [x] Writers unchanged in this commit — defaults keep them working. Commit E
+      will thread an explicit `strategy_id` parameter through them.
+

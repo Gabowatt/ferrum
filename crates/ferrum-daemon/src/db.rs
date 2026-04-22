@@ -30,16 +30,23 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), FerrumError> {
-        // Core tables
+        // Core tables.
+        //
+        // V2.1 multi-strategy attribution: `strategy_id` (default 'forge')
+        // tags every fill / trade / scan with the strategy that produced it.
+        // Defaults exist so legacy code paths that don't yet pass an explicit
+        // id keep working; later commits in V2.1 will thread the value
+        // through writers.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS fills (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol    TEXT    NOT NULL,
-                side      TEXT    NOT NULL,
-                qty       REAL    NOT NULL,
-                price     REAL    NOT NULL,
-                timestamp TEXT    NOT NULL,
-                order_id  TEXT    NOT NULL UNIQUE
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol      TEXT    NOT NULL,
+                side        TEXT    NOT NULL,
+                qty         REAL    NOT NULL,
+                price       REAL    NOT NULL,
+                timestamp   TEXT    NOT NULL,
+                order_id    TEXT    NOT NULL UNIQUE,
+                strategy_id TEXT    NOT NULL DEFAULT 'forge'
             )"
         ).execute(&self.pool).await?;
 
@@ -88,6 +95,9 @@ impl Database {
             )"
         ).execute(&self.pool).await?;
 
+        // `position_id` is nullable. Phase 3 uses it to group the 4 legs of an
+        // iron condor under a single position id; Forge writes it as NULL
+        // (single-leg positions don't need grouping).
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS trade_log (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +114,9 @@ impl Database {
                 delta            REAL,
                 dte              INTEGER,
                 exit_reason      TEXT,
-                pnl              REAL
+                pnl              REAL,
+                strategy_id      TEXT    NOT NULL DEFAULT 'forge',
+                position_id      TEXT
             )"
         ).execute(&self.pool).await?;
 
@@ -112,16 +124,59 @@ impl Database {
         // Useful for diagnosing how close/far the bot is from generating a buy signal.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS scan_results (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT    NOT NULL,
-                symbol    TEXT    NOT NULL,
-                regime    TEXT    NOT NULL,
-                score     INTEGER NOT NULL,
-                direction TEXT,
-                outcome   TEXT    NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT    NOT NULL,
+                symbol      TEXT    NOT NULL,
+                regime      TEXT    NOT NULL,
+                score       INTEGER NOT NULL,
+                direction   TEXT,
+                outcome     TEXT    NOT NULL,
+                strategy_id TEXT    NOT NULL DEFAULT 'forge'
             )"
         ).execute(&self.pool).await?;
 
+        // ── Upgrade path for existing DBs (V2 → V2.1) ────────────────────────
+        // SQLite has no IF NOT EXISTS for ADD COLUMN, so we inspect the current
+        // schema first and only ALTER when the column is missing. Idempotent
+        // and safe to run on every boot.
+        self.add_column_if_missing(
+            "fills", "strategy_id",
+            "ALTER TABLE fills ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+        self.add_column_if_missing(
+            "trade_log", "strategy_id",
+            "ALTER TABLE trade_log ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+        self.add_column_if_missing(
+            "trade_log", "position_id",
+            "ALTER TABLE trade_log ADD COLUMN position_id TEXT",
+        ).await?;
+        self.add_column_if_missing(
+            "scan_results", "strategy_id",
+            "ALTER TABLE scan_results ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+
+        Ok(())
+    }
+
+    /// Idempotent ADD COLUMN: no-op if `column` already exists on `table`.
+    async fn add_column_if_missing(
+        &self,
+        table:      &str,
+        column:     &str,
+        alter_sql:  &str,
+    ) -> Result<(), FerrumError> {
+        // PRAGMA table_info returns one row per column; the `name` field is the column name.
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(&self.pool).await?;
+        let exists = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == column)
+                .unwrap_or(false)
+        });
+        if !exists {
+            sqlx::query(alter_sql).execute(&self.pool).await?;
+        }
         Ok(())
     }
 

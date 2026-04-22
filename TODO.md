@@ -26,7 +26,7 @@ run in parallel with live UI toggles. Rename the current strategy
 ### Phase 1 — Strategy registry + attribution (no behavior change)
 Make the daemon multi-strategy-shaped while it still runs only Forge.
 - [x] Rename `IronConduitStrategy` → `ForgeStrategy`; renamed strategy doc + config section + log prefixes.
-- [ ] DB migration: add `strategy_id` column to fills/trade_log/scan_results; add nullable `position_id` to trade_log (for Phase 3 condor leg grouping).
+- [x] DB migration: `strategy_id` (default 'forge') on fills/trade_log/scan_results; nullable `position_id` on trade_log (Phase 3 leg grouping). Idempotent ALTER via PRAGMA inspection.
 - [ ] Promote `Strategy` trait (`id`, `scan_interval`, `check_exit`).
 - [ ] Replace single strategy instance with `Vec<Arc<StrategyHandle>>`; one loop per strategy.
 - [ ] Add `strategy_id` to `OpenPositionMeta`.
