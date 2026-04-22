@@ -1,7 +1,7 @@
-# ferrum — V1 → V2 history
+# ferrum — changelog
 
-Archive of completed work through the V1 paper-trading run and V2 web-dashboard
-build. Kept for reference. Forward-looking work lives in `/TODO.md`.
+Append-only log of completed work, newest sections at the bottom.
+Forward-looking work lives in `/TODO.md`.
 
 ## Initial scaffold
 

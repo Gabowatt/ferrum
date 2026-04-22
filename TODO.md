@@ -1,6 +1,6 @@
 # ferrum — current checkpoint
 
-> Historical log of completed work: [`docs/changelog/V1-V2-history.md`](docs/changelog/V1-V2-history.md)
+> Historical log of completed work: [`docs/changelog/history.md`](docs/changelog/history.md)
 
 ## Status
 
