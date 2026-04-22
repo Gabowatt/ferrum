@@ -177,3 +177,33 @@ Forward-looking work lives in `/TODO.md`.
 - [x] **TODO "To run" section updated** — dropped `ferrum-tui`, added the
       `ferrum-web` + Vite dev-server workflow.
 
+## Cleanup pass — 2026-04-21
+
+- [x] Removed `.github/workflows/deploy.yml` (Pages deploy) — homelab plan instead.
+- [x] Removed legacy config fields: `chain_scan_interval`, `min_confluence_score`,
+      `profit_target_partial_pct`, `profit_target_full_pct`. Removed matching
+      `StrategyConfig` / `ExitConfig` / `EntryConfig` fields.
+- [x] Removed dead daemon code: `cancel_order` (never called), `Strategy::name`
+      trait method (never called), unused struct fields on `AlpacaOrder`,
+      `AlpacaPosition.unrealized_pl`, `OptionContract.contract_type`,
+      `AlpacaClock.next_close`, `IvRankResult.{current_iv, method}`, and the
+      now-unused `IvMethod` enum.
+- [x] Build now compiles with **zero warnings**.
+- [x] Removed `ferrum-export` crate (tax/CSV tooling, never used).
+- [x] Dropped now-unused `clap` and `anyhow` from workspace deps.
+- [x] Updated README architecture diagram (TUI/Phase-2 split → React + Axum + daemon).
+- [x] Renamed strategy directory tree references; dropped `ferrum-export/` from workspace docs.
+- [x] Archived 175 lines of historical session checkpoints from `TODO.md` into
+      `docs/changelog/history.md`. TODO went from 263 → ~70 lines.
+- [x] `.gitignore`: added `.claude/worktrees/`.
+
+## V2.1 planning — 2026-04-21
+
+- [x] Multi-strategy architecture plan written: `docs/multi-strategy-plan.md`.
+- [x] Naming settled: current strategy renames to **Forge**; new 4-leg credit
+      spread becomes **Iron Condor**.
+- [x] Design decisions settled: shared risk budget, write-back toggles to
+      config.toml, real ALTER TABLE migration, per-strategy scan intervals.
+- [x] TODO restructured around the V2.1 phased delivery (registry → toggle UI
+      → Iron Condor strategy).
+
