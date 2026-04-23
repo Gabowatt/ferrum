@@ -4,8 +4,11 @@
 
 ## Status
 
-- **Active branch**: `V2.1` — feature-complete. Wrapping up; tagging
-  `v2.1.0` after market close on **2026-04-24**.
+- **Active branch**: `V2.1` — wrapping up. One feature still to land
+  (the weekly review report), then tagging `v2.1.0`. Target tag is
+  after the **2026-04-24** close if the report is in by then; slip a
+  few days otherwise — the report has to actually fire on Friday for
+  us to trust it before we tag.
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
 - **Last paper run**: 2026-04-22 — 0 entries again. Hoping for a fill
   this week so the new dashboard (strategy stats, badges, ticker)
@@ -22,11 +25,52 @@ _None open._
 
 Phase 1 + Phase 2 shipped. Phase 3 (Iron Condor) is deferred to **V2.3**
 because the Alpaca multi-leg spreads application is still pending.
+One feature still to land in V2.1: the weekly review report. We want
+it driving the very first weekend tuning pass after the tag, so it
+has to ship before the tag — not after.
 
 - [x] Phase 1 — Strategy registry + attribution.
 - [x] Phase 2 — Live toggle + UI plumbing + post-Phase-2 UX polish.
-- [ ] Tag `v2.1.0` after the 2026-04-24 close. Merge `V2.1` → `main`,
-      annotated tag, push tag. Update `Last shipped` here once done.
+
+### Weekly strategy review report
+
+Goal: a generated, readable digest at end of week (Friday after close)
+that drives the weekend tuning pass. Replaces the current eyeball-scan
+of logs. First run target: **Friday 2026-04-24** after close so we
+have real output to read against before tagging.
+
+- [ ] **Format**: markdown file emitted to `docs/reports/YYYY-MM-DD.md`,
+      one per Friday. Same file overwrites if re-run that day.
+- [ ] **Sections**:
+  - Scan summary — total scans, by symbol, by regime, hit rate.
+  - Veto breakdown — count by reason (extreme_proximity, sector cap,
+    min_confluence, IV rank gate, etc.). The "why didn't we enter"
+    column.
+  - Near-miss table — symbols that scored within 1 point of
+    `min_confluence_score` but were vetoed; what would have changed
+    if the threshold were 1 lower.
+  - Entries + exits — fills, P&L per trade, P&L per strategy,
+    win rate, average hold, average winner / average loser.
+  - Regime distribution — what % of scans saw TrendingUp /
+    TrendingDown / RangeBound / Choppy.
+  - One-line "verdict" the operator writes by hand at the top after
+    reading, before tuning.
+- [ ] **Implementation**: new `ferrum-report` CLI binary in the
+      workspace (separate so it doesn't bloat the daemon), reads
+      `~/.ferrum/ferrum.db` directly, takes `--week=YYYY-Www` (default
+      = current ISO week), writes the markdown file.
+- [ ] **First real run**: `cargo run -p ferrum-report` on Friday
+      2026-04-24 after close. Read the output, sanity-check the
+      numbers against the daemon logs, write a verdict by hand. If
+      the report is broken or ugly, fix before tagging.
+- [ ] **Schedule (deferred to V2.2)**: cron entry on the homelab once
+      it's deployed — Friday 16:30 ET. Until then, manual invocation.
+
+### Tag + branch out
+
+- [ ] Tag `v2.1.0` once the weekly report has run cleanly at least
+      once. Merge `V2.1` → `main`, annotated tag, push tag. Update
+      `Last shipped` here once done.
 - [ ] Spin off `V2.2` branch from the merged main right after the tag.
 
 ## V2.2 — homelab deployment + PDT rule change
@@ -88,6 +132,9 @@ the current GitHub workflow keeps working until the cutover is verified.
   - LAN-only CORS / firewall rule so `ferrum-web` is only reachable
     from the LAN.
   - Log rotation for daemon stdout (or move to `journald` directly).
+  - Cron entry `30 16 * * 5` running `ferrum-report` against the
+    homelab DB so the Friday report fires unattended (manual until
+    deploy lands — see V2.1 weekly-report section).
 
 ### Theme B — PDT rule removal + strategy rework
 
@@ -141,35 +188,6 @@ on day 1.
 - [ ] **Strategy doc update** — `docs/ferrum-forge-strategy.md` Section
       on PDT and sizing tables need a rewrite + a note that the
       pre-2026 rules are kept in the appendix for historical context.
-
-### Theme C — Weekly strategy review report
-
-Goal: a generated, readable digest at end of week (Friday after close)
-that drives the weekend tuning pass. Replaces the current eyeball-scan
-of logs.
-
-- [ ] **Format**: markdown file emitted to `docs/reports/YYYY-MM-DD.md`,
-      one per Friday. Same file overwrites if re-run that day.
-- [ ] **Sections**:
-  - Scan summary — total scans, by symbol, by regime, hit rate.
-  - Veto breakdown — count by reason (extreme_proximity, sector cap,
-    min_confluence, IV rank gate, etc.). The "why didn't we enter"
-    column.
-  - Near-miss table — symbols that scored within 1 point of
-    `min_confluence_score` but were vetoed; what would have changed
-    if the threshold were 1 lower.
-  - Entries + exits — fills, P&L per trade, P&L per strategy,
-    win rate, average hold, average winner / average loser.
-  - Regime distribution — what % of scans saw TrendingUp /
-    TrendingDown / RangeBound / Choppy.
-  - One-line "verdict" the operator writes by hand at the top after
-    reading, before tuning.
-- [ ] **Implementation**: new `ferrum-report` CLI binary in the
-      workspace (separate so it doesn't bloat the daemon), reads
-      `~/.ferrum/ferrum.db` directly, takes `--week=YYYY-Www` (default
-      = current ISO week), writes the markdown file.
-- [ ] **Schedule**: cron entry on the homelab once it's deployed —
-      Friday 16:30 ET. Until then, manual `cargo run -p ferrum-report`.
 
 ### Backlog (still post-V2)
 - Run Forge for a week with the 0.25 ATR veto and re-evaluate
