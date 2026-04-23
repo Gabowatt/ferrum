@@ -332,3 +332,68 @@ in Phase 3.
 - [x] Build clean (`cargo build --workspace` + `npm run build` in `web/`),
       zero warnings.
 
+## V2.1 dashboard polish — 2026-04-22
+
+Three quality-of-life passes after Phase 2 testing surfaced rough edges.
+
+- [x] **StrategiesPanel toggle bug — root-caused & fixed.** The Forge
+      toggle never visually flipped off in the browser, even though the
+      raw-socket Phase 2 test was green. Two compounding causes:
+  - `crates/ferrum-web/src/main.rs` registered the route as
+    `/api/strategies/{id}/enabled`. axum 0.7 only adopted `{}` param
+    syntax in 0.8 — in 0.7 it's a literal segment, so the POST never
+    matched the API router and fell through to the static-file
+    fallback (GET-only) → 405 Method Not Allowed. Fixed by switching
+    to `:id` and dropping a comment so a future axum bump doesn't
+    regress it.
+  - `web/src/components/StrategiesPanel.tsx` had no optimistic UI and
+    silently `console.error`'d failures. Even when the route was
+    eventually fixed, a slow round-trip looked like a no-op. Now the
+    toggle flips locally on click, an in-flight `pending` flag
+    disables only the toggled row, and any API failure reverts the
+    optimistic flip and surfaces an inline red `toggle failed: …`
+    string under the row. Errors stop being mysteries.
+- [x] **Hide-PnL parrot.** New toggle in the PnlPanel header (mirrors
+      the strategy-toggle styling, floats right via
+      `.panel-header > .toggle-switch { margin-left: auto }`). When off,
+      the panel body swaps for a `<ParrotAnimation>` — the 10 frames
+      under `web/src/parrot/{0..9}.txt` are the unmodified ASCII files
+      from `hugomd/parrot.live`, loaded via Vite's `?raw` import (so the
+      source-of-truth is the original .txt files; zero risk of leading-
+      whitespace drift). Cycles at 70 ms with a 36°/frame hue step so a
+      full rainbow completes once per parrot loop. Preference persists
+      in `sessionStorage` (intentional — survives F5 but not a fresh
+      browser session). `web/src/vite-env.d.ts` added with `?raw` module
+      declaration so TypeScript stops complaining.
+- [x] **Header ticker strip.** Nasdaq-style scrolling marquee between
+      the PDT counter and Start/Stop. New
+      `IpcCommand::GetTickerSnapshot` calls Alpaca
+      `/v2/stocks/snapshots?symbols=…&feed=iex` once for the entire
+      `cfg.symbols.all()` universe — `latestTrade.p` for price,
+      `prevDailyBar.c` for the day-change baseline. New
+      `IpcResponse::TickerSnapshot { entries: Vec<TickerEntry> }` and
+      `TickerEntry { symbol, price, change_pct }` in
+      `ferrum-core/types.rs`. New `/api/ticker` route, `getTicker()` in
+      `web/src/api.ts`, polled every 15 s by `useDashboard`. Failures
+      log to `console.warn` only — the strip is decorative and a
+      transient Alpaca hiccup shouldn't redline the dashboard. The
+      `<TickerStrip>` renders two stitched copies of the tape inside a
+      `.ticker-track` that animates `translateX(-50%)` over 60 s; copy
+      #2 lines up exactly where copy #1 started → seamless loop with no
+      jump. Edge mask fades items in/out, hover pauses the animation.
+      Up/down/flat coloring per item.
+- [x] **Left-column panels fill leftover height.** `.main-grid` now
+      claims `flex: 1 1 auto; min-height: 0` (was `align-items: start`
+      which sized columns to content), `.left-column > .panel` becomes a
+      `flex: 1 1 0` flex column, and each panel body
+      (`.positions-table-wrap` / a new matching `.fills-table-wrap`) is
+      `flex: 1 1 0; min-height: 0; overflow-y: auto`. Result: Positions
+      and Recent Fills evenly share the available vertical gap and each
+      table scrolls independently when overstuffed. No more dead
+      whitespace below either box.
+- [x] Dropped the "party parrot" caption beneath the ASCII art —
+      operator preference; the bird carries itself.
+- [x] Build clean (`cargo build --workspace` + `npm run build`),
+      zero warnings. Commits: `9817da3` (UX additions),
+      `2bb2e6d` (axum 0.7 fix + caption + stretch).
+

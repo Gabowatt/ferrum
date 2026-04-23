@@ -4,9 +4,9 @@
 
 ## Status
 
-- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 + Phase 2 complete. UX polish landed (toggle bug fix, hide-PnL parrot, header ticker). Ready for Phase 3 Iron Condor.
+- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 + Phase 2 complete. UX polish landed (toggle bug fix, hide-PnL parrot, header ticker, left-column stretch). Ready for Phase 3 Iron Condor.
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
-- **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR).
+- **Last paper run**: 2026-04-22 — 0 entries again. Hoping tomorrow gets a fill so the new dashboard (strategy stats, badges, ticker) actually has data to show.
 - **Build**: clean, zero warnings (`cargo build --workspace`).
 - **Daemon**: stop button verified working; live-mode hard block removed (gated only at startup via `live.enabled`).
 
@@ -57,6 +57,14 @@ Make the daemon multi-strategy-shaped while it still runs only Forge.
 - Run Forge for a week with the 0.25 ATR veto and re-evaluate near-miss data.
 - Vertical credit spreads as a third strategy.
 - Per-strategy P&L tiles in the dashboard.
+- **StrategiesPanel — fixed footprint as the registry grows.** Today every
+  strategy adds another row; with 3+ strategies the panel will dominate the
+  right column. Convert the panel body to a single-strategy view with
+  prev/next arrows (or a small dot pager / carousel). Keep the aggregate
+  `N/M enabled` meta in the header so the operator can still see overall
+  state at a glance. The toggle and per-strategy stats stay where they are
+  inside the active card; arrows persist the selected strategy in
+  `sessionStorage` so a reload doesn't reset to the first one.
 - Homelab deployment (systemd/Docker, LAN-only CORS, persistent data volume).
 
 ## To run
