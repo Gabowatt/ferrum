@@ -16,6 +16,7 @@ export default function App() {
     clock,
     equity,
     strategies,
+    ticker,
     logs,
     newLogIds,
     refresh,
@@ -28,6 +29,7 @@ export default function App() {
         mode={botStatus?.mode ?? null}
         pdt={pdt}
         clock={clock}
+        ticker={ticker}
         onStatusChange={refresh.status}
         onModeChange={refresh.status}
       />

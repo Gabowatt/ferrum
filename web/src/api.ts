@@ -11,6 +11,7 @@ import type {
   ModeResponse,
   TradingMode,
   StrategyInfo,
+  TickerEntry,
 } from "./types";
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -61,6 +62,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     }),
+
+  getTicker: () => fetchJson<TickerEntry[]>("/api/ticker"),
 };
 
 export function createSSEConnection(

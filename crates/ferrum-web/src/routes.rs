@@ -136,6 +136,18 @@ pub async fn get_strategies(State(_s): State<Arc<AppState>>) -> Api {
     }
 }
 
+// ── GET /api/ticker ───────────────────────────────────────────────────────────
+
+pub async fn get_ticker(State(_s): State<Arc<AppState>>) -> Api {
+    match send_ipc(IpcCommand::GetTickerSnapshot).await {
+        Some(IpcResponse::TickerSnapshot { entries }) => {
+            ok(serde_json::to_value(entries).unwrap_or(json!([])))
+        }
+        Some(IpcResponse::Error { message }) => bad(&message),
+        _ => unavailable(),
+    }
+}
+
 // ── POST /api/strategies/:id/enabled ──────────────────────────────────────────
 //
 // Body: { "enabled": true | false }. Daemon flips the live AtomicBool and

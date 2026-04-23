@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   AreaChart,
   Area,
@@ -8,6 +9,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import type { PnlResponse, EquityResponse } from "../types";
+import { ParrotAnimation } from "./ParrotAnimation";
 
 interface PnlPanelProps {
   pnl: PnlResponse | null;
@@ -78,6 +80,27 @@ function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
 }
 
 export function PnlPanel({ pnl, equity }: PnlPanelProps) {
+  // Local-only — privacy/morale toggle. When true the panel swaps its body
+  // for an animated parrot.live party parrot. Persisted across reloads so the
+  // user's preference survives a refresh; sessionStorage is intentional (we
+  // don't want it sticky forever, but a hard refresh shouldn't reveal the P&L).
+  const [hidden, setHidden] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.sessionStorage.getItem("ferrum.pnlHidden") === "1";
+  });
+
+  function toggleHidden() {
+    setHidden((prev) => {
+      const next = !prev;
+      try {
+        window.sessionStorage.setItem("ferrum.pnlHidden", next ? "1" : "0");
+      } catch {
+        // private mode / quota — non-fatal
+      }
+      return next;
+    });
+  }
+
   const chartData = equity ? buildChartData(equity) : [];
 
   const cards: { label: string; value: number | null }[] = [
@@ -90,8 +113,23 @@ export function PnlPanel({ pnl, equity }: PnlPanelProps) {
     <div className="panel">
       <div className="panel-header">
         <span className="panel-title">P&amp;L</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!hidden}
+          aria-label={hidden ? "Show P&L" : "Hide P&L"}
+          title={hidden ? "Show P&L" : "Hide P&L"}
+          className={`toggle-switch ${hidden ? "toggle-switch--off" : "toggle-switch--on"}`}
+          onClick={toggleHidden}
+        >
+          <span className="toggle-switch__knob" />
+        </button>
       </div>
 
+      {hidden ? (
+        <ParrotAnimation />
+      ) : (
+        <>
       <div className="pnl-cards">
         {cards.map(({ label, value }) => (
           <div key={label} className="pnl-card">
@@ -162,6 +200,8 @@ export function PnlPanel({ pnl, equity }: PnlPanelProps) {
           </ResponsiveContainer>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

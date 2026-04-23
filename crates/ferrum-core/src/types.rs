@@ -100,6 +100,9 @@ pub enum IpcCommand {
     GetStrategies,
     /// V2.1 Phase 2: live-toggle a strategy and persist the choice to config.toml.
     SetStrategyEnabled { id: String, enabled: bool },
+    /// Live price snapshot for the configured scan universe — used by the
+    /// header ticker strip. Returns price + day-change % per symbol.
+    GetTickerSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,8 +146,24 @@ pub enum IpcResponse {
     Strategies {
         strategies: Vec<StrategyInfo>,
     },
+    /// Live ticker snapshot for the scan universe (header marquee).
+    TickerSnapshot {
+        entries: Vec<TickerEntry>,
+    },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),
+}
+
+// ── Ticker snapshot entry ─────────────────────────────────────────────────────
+//
+// One row per scanned symbol for the header's Nasdaq-style scrolling banner.
+// `change_pct` is a fraction (0.0125 = +1.25 %); the UI formats display.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerEntry {
+    pub symbol:     String,
+    pub price:      f64,
+    pub change_pct: f64,
 }
 
 // ── Strategy registry info (V2.1 Phase 2) ────────────────────────────────────

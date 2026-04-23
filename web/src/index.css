@@ -184,7 +184,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex: 1;
+  flex: 0 0 auto;
   flex-wrap: wrap;
 }
 
@@ -953,6 +953,10 @@ body {
 
 .toggle-switch:disabled { opacity: 0.5; cursor: wait; }
 
+/* When the toggle lives directly in a panel header (e.g. PnlPanel hide
+   button), float it to the right so it mirrors the .panel-meta layout. */
+.panel-header > .toggle-switch { margin-left: auto; }
+
 .toggle-switch--on {
   background: rgba(158, 206, 106, 0.25);
   border-color: rgba(158, 206, 106, 0.5);
@@ -972,6 +976,138 @@ body {
 .toggle-switch--on .toggle-switch__knob {
   transform: translateX(16px);
   background: var(--tn-green);
+}
+
+/* Party parrot — replaces the P&L body when the operator hides numbers. */
+.parrot-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 8px;
+  min-height: 240px;
+}
+
+.parrot-art {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.0;
+  letter-spacing: 0;
+  white-space: pre;
+  margin: 0;
+  text-align: left;
+  /* Hue is set inline per frame; keep a soft glow that picks up the current
+     color so the parrot reads as a single party-colored creature, not a flat
+     character grid. */
+  text-shadow: 0 0 6px currentColor;
+  transition: color 0.05s linear;
+}
+
+.parrot-caption {
+  margin-top: 10px;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--tn-comment);
+  font-family: var(--font-mono);
+}
+
+/* ── Header ticker strip ─────────────────────────────────────────────────
+   Nasdaq-style infinite marquee. Two identical "tapes" sit side by side
+   inside `.ticker-track`; the track is animated with `translateX(-50%)` so
+   tape #2 lines up exactly where tape #1 started — perfectly seamless.
+   Hover pauses the animation so the user can read a passing quote. */
+.ticker-strip {
+  flex: 1 1 auto;
+  min-width: 0;             /* let the strip actually shrink in narrow viewports */
+  height: 30px;
+  margin: 0 16px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--tn-border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  /* Soft fade at both edges so items materialize/dissolve instead of popping. */
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+
+.ticker-strip--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ticker-empty {
+  font-size: 10px;
+  color: var(--tn-comment);
+  font-family: var(--font-mono);
+  letter-spacing: 0.2em;
+}
+
+.ticker-track {
+  display: flex;
+  width: max-content;
+  height: 100%;
+  animation: ticker-scroll 60s linear infinite;
+}
+
+.ticker-strip:hover .ticker-track {
+  animation-play-state: paused;
+}
+
+.ticker-tape {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 12px;
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.ticker-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ticker-symbol {
+  color: var(--tn-fg);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.ticker-price {
+  color: var(--tn-fg);
+}
+
+.ticker-arrow { font-size: 9px; }
+.ticker-pct   { font-size: 11px; font-weight: 600; }
+
+.ticker-item--up   .ticker-arrow,
+.ticker-item--up   .ticker-pct   { color: var(--tn-green); }
+.ticker-item--down .ticker-arrow,
+.ticker-item--down .ticker-pct   { color: var(--tn-red); }
+.ticker-item--flat .ticker-arrow,
+.ticker-item--flat .ticker-pct   { color: var(--tn-comment); }
+
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+/* Inline failure surfaced under a strategy row when the toggle round-trip
+   errors out — keeps the "nothing happened" mystery from biting again. */
+.strategy-row__error {
+  font-size: 10px;
+  color: var(--tn-red);
+  font-family: var(--font-mono);
+  margin-top: 2px;
+  word-break: break-word;
 }
 
 /* ── Utility ─────────────────────────────────────────────────────────── */

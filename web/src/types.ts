@@ -77,3 +77,10 @@ export interface ModeResponse {
   ok: boolean;
   restart_required: boolean;
 }
+
+export interface TickerEntry {
+  symbol: string;
+  price: number;
+  /** Day-change as a fraction, e.g. 0.0125 = +1.25 %. */
+  change_pct: number;
+}

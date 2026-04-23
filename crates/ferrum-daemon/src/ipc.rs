@@ -7,7 +7,7 @@ use tokio::{
 use tracing::{error, info};
 use serde::Deserialize;
 
-use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position, StrategyInfo};
+use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position, StrategyInfo, TickerEntry};
 
 use crate::{exit_monitor, strategy, AppState};
 
@@ -236,7 +236,80 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 }
             }
         }
+
+        IpcCommand::GetTickerSnapshot => {
+            // One Alpaca call returns snapshots for the entire scan universe.
+            // Latest trade price + previous-day close gives us a stable %-change
+            // even after-hours when the latest quote can drift.
+            let symbols: Vec<String> = state.config.symbols.all().iter().map(|s| s.to_string()).collect();
+            if symbols.is_empty() {
+                return IpcResponse::TickerSnapshot { entries: vec![] };
+            }
+            match fetch_ticker_snapshot(&state.client, &symbols).await {
+                Ok(entries) => IpcResponse::TickerSnapshot { entries },
+                Err(e)      => IpcResponse::Error { message: e.to_string() },
+            }
+        }
     }
+}
+
+// ── Ticker snapshot helper ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StockSnapshotsResponse {
+    #[serde(flatten)]
+    by_symbol: std::collections::HashMap<String, StockSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockSnapshot {
+    #[serde(rename = "latestTrade")]
+    latest_trade:   Option<StockTrade>,
+    #[serde(rename = "dailyBar")]
+    daily_bar:      Option<StockBar>,
+    #[serde(rename = "prevDailyBar")]
+    prev_daily_bar: Option<StockBar>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockTrade {
+    #[serde(rename = "p")] price: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockBar {
+    #[serde(rename = "c")] close: f64,
+}
+
+async fn fetch_ticker_snapshot(
+    client: &ferrum_core::client::AlpacaClient,
+    symbols: &[String],
+) -> Result<Vec<TickerEntry>, ferrum_core::error::FerrumError> {
+    let csv = symbols.join(",");
+    let resp: StockSnapshotsResponse = client
+        .get_data_with_query(
+            "/v2/stocks/snapshots",
+            &[("symbols", csv.as_str()), ("feed", "iex")],
+        )
+        .await?;
+
+    // Preserve the configured order so tier1 indices lead the marquee.
+    let mut entries = Vec::with_capacity(symbols.len());
+    for sym in symbols {
+        let Some(snap) = resp.by_symbol.get(sym) else { continue; };
+        // Price preference: latest trade > today's bar close > prev close.
+        let price = snap.latest_trade.as_ref().map(|t| t.price)
+            .or(snap.daily_bar.as_ref().map(|b| b.close))
+            .or(snap.prev_daily_bar.as_ref().map(|b| b.close));
+        let prev  = snap.prev_daily_bar.as_ref().map(|b| b.close);
+        let Some(p) = price else { continue; };
+        let change_pct = match prev {
+            Some(pc) if pc > 0.0 => (p - pc) / pc,
+            _ => 0.0,
+        };
+        entries.push(TickerEntry { symbol: sym.clone(), price: p, change_pct });
+    }
+    Ok(entries)
 }
 
 // ── Alpaca position helper ─────────────────────────────────────────────────────

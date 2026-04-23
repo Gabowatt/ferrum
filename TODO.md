@@ -4,7 +4,7 @@
 
 ## Status
 
-- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 complete; Phase 2 in progress (live toggles + UI plumbing shipped, ready for Phase 3 Iron Condor).
+- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 + Phase 2 complete. UX polish landed (toggle bug fix, hide-PnL parrot, header ticker). Ready for Phase 3 Iron Condor.
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
 - **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR).
 - **Build**: clean, zero warnings (`cargo build --workspace`).
@@ -38,6 +38,10 @@ Make the daemon multi-strategy-shaped while it still runs only Forge.
 - [x] IPC `GetStrategies`, `SetStrategyEnabled`. Persistence uses `toml_edit` so comments + ordering in config.toml survive the rewrite. End-to-end tested via raw socket: socket toggle → AtomicBool flip → config rewrite → next GetStrategies reflects state.
 - [x] Web `StrategiesPanel` with toggles + per-strategy mini-stats (open positions, signals today, scans today). Disabled strategy rows still poll, so re-enabling shows immediate stats.
 - [x] Strategy badge column on `PositionsPanel`. Legacy / manually-opened positions render as `manual` (gray) so the eye doesn't have to pattern-match missing data.
+- [x] **Post-Phase-2 UX polish**:
+  - StrategiesPanel toggle: optimistic UI + visible inline error if the daemon round-trip fails (root cause of "toggle won't turn off" was silent error swallowing).
+  - PnlPanel hide toggle in the header — when off, swaps the body for an animated party parrot (frames sourced verbatim from hugomd/parrot.live, hue-cycled per frame). Preference persists in `sessionStorage`.
+  - Header ticker strip — Nasdaq-style scrolling marquee between PDT counter and Start/Stop. New `IpcCommand::GetTickerSnapshot` hits Alpaca `/v2/stocks/snapshots` for the entire scan universe; web polls `/api/ticker` every 15s. Hover pauses the scroll.
 
 ### Phase 3 — Iron Condor strategy
 **Manual prerequisite:** request multi-leg spread approval on Alpaca paper.
