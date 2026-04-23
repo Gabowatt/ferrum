@@ -4,7 +4,7 @@
 
 ## Status
 
-- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 in progress; Forge rename + DB migration + StrategyHandle registry + strategy_id threading shipped.
+- **Active branch**: `V2.1` (multi-strategy refactor) — Phase 1 complete; Phase 2 in progress (live toggles + UI plumbing shipped, ready for Phase 3 Iron Condor).
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
 - **Last paper run**: 2026-04-21 — 2,109 scans / 0 entries (extreme_proximity veto blocked the only threshold hit; veto since tuned 0.5 → 0.25 ATR).
 - **Build**: clean, zero warnings (`cargo build --workspace`).
@@ -34,10 +34,10 @@ Make the daemon multi-strategy-shaped while it still runs only Forge.
 - [ ] (Phase 2 prep) `Strategy::check_exit` — deferred until Iron Condor lands and needs strategy-specific exits.
 
 ### Phase 2 — Live toggle + UI plumbing
-- [ ] `enabled: AtomicBool` per strategy handle; loop checks before each scan.
-- [ ] IPC `GetStrategies`, `SetStrategyEnabled` (writes back to config.toml).
-- [ ] Web `StrategiesPanel` with toggles + per-strategy mini-stats.
-- [ ] Strategy badge column on `PositionsPanel`.
+- [x] `enabled: AtomicBool` per strategy handle; loop checks before each scan (shipped in Phase 1 Commit C; seed value now read from `[strategies.<id>].enabled` on boot).
+- [x] IPC `GetStrategies`, `SetStrategyEnabled`. Persistence uses `toml_edit` so comments + ordering in config.toml survive the rewrite. End-to-end tested via raw socket: socket toggle → AtomicBool flip → config rewrite → next GetStrategies reflects state.
+- [x] Web `StrategiesPanel` with toggles + per-strategy mini-stats (open positions, signals today, scans today). Disabled strategy rows still poll, so re-enabling shows immediate stats.
+- [x] Strategy badge column on `PositionsPanel`. Legacy / manually-opened positions render as `manual` (gray) so the eye doesn't have to pattern-match missing data.
 
 ### Phase 3 — Iron Condor strategy
 **Manual prerequisite:** request multi-leg spread approval on Alpaca paper.

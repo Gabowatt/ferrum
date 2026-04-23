@@ -62,6 +62,7 @@ export function PositionsPanel({ positions }: PositionsPanelProps) {
             <thead>
               <tr>
                 <th>Contract</th>
+                <th>Strategy</th>
                 <th>Dir</th>
                 <th>Qty</th>
                 <th>Entry</th>
@@ -73,11 +74,17 @@ export function PositionsPanel({ positions }: PositionsPanelProps) {
             <tbody>
               {positions.map((pos) => {
                 const plSign = pos.unrealized_pl >= 0 ? "+" : "";
+                const strategyId = pos.strategy_id ?? "manual";
                 return (
                   <tr key={pos.contract}>
                     <td>
                       <div className="contract-symbol">{pos.contract}</div>
                       <div className="underlying-tag">{pos.underlying}</div>
+                    </td>
+                    <td>
+                      <span className={`strategy-badge strategy-badge--${strategyId}`}>
+                        {strategyId}
+                      </span>
                     </td>
                     <td>
                       <span

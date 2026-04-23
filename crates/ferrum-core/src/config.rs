@@ -12,6 +12,17 @@ pub struct AppConfig {
     pub sizing:    SizingConfig,
     pub risk:      RiskConfig,
     pub pdt:       PdtConfig,
+    /// V2.1 Phase 2: optional per-strategy live-toggle persistence. Each
+    /// `[strategies.<id>]` table holds an `enabled` boolean that the daemon
+    /// reads on boot to seed `StrategyHandle::enabled`. Missing entries
+    /// default to enabled — Phase 1 configs continue to work unchanged.
+    #[serde(default)]
+    pub strategies: std::collections::HashMap<String, StrategyToggleEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StrategyToggleEntry {
+    pub enabled: bool,
 }
 
 // ── Alpaca ────────────────────────────────────────────────────────────────────

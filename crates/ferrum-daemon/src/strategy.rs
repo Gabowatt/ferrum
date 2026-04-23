@@ -50,18 +50,20 @@ pub struct StrategyHandle {
 }
 
 impl StrategyHandle {
-    pub fn new(strategy: Arc<dyn Strategy>, scan_interval: Duration) -> Arc<Self> {
+    pub fn new(strategy: Arc<dyn Strategy>, scan_interval: Duration, enabled: bool) -> Arc<Self> {
         Arc::new(Self {
             id: strategy.id(),
             scan_interval,
-            enabled: AtomicBool::new(true),
+            enabled: AtomicBool::new(enabled),
             strategy,
         })
     }
 
     pub fn is_enabled(&self) -> bool { self.enabled.load(Ordering::Relaxed) }
 
-    #[allow(dead_code)] // wired in Phase 2 when SetStrategyEnabled IPC lands
+    /// Live toggle entry point — IPC `SetStrategyEnabled` flips this and
+    /// (separately) persists the change to `config.toml` so it survives a
+    /// daemon restart.
     pub fn set_enabled(&self, v: bool) { self.enabled.store(v, Ordering::Relaxed); }
 }
 
@@ -82,8 +84,9 @@ impl std::fmt::Debug for StrategyHandle {
 /// configurable without touching code.
 pub fn build_strategies(config: &AppConfig) -> Vec<Arc<StrategyHandle>> {
     let forge_interval = Duration::from_secs(config.strategy.scan_interval_secs);
+    let forge_enabled  = config.strategies.get("forge").map(|e| e.enabled).unwrap_or(true);
     vec![
-        StrategyHandle::new(Arc::new(ForgeStrategy::new()), forge_interval),
+        StrategyHandle::new(Arc::new(ForgeStrategy::new()), forge_interval, forge_enabled),
     ]
 }
 

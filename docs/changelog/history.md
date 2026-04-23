@@ -283,3 +283,52 @@ Forward-looking work lives in `/TODO.md`.
       complete; runtime behavior is identical to V2 but the daemon is now
       shaped for N strategies.
 
+## V2.1 Phase 2 — Live strategy toggles + UI plumbing (2026-04-22)
+
+End-to-end live enable/disable for strategies, persisted to config.toml,
+plumbed all the way to a React `StrategiesPanel`. Daemon still hosts only
+Forge; the same wiring will light up automatically when Iron Condor lands
+in Phase 3.
+
+- [x] **IPC contract**: new `IpcCommand::GetStrategies` returns a
+      `Vec<StrategyInfo>` with `id`, `enabled`, `scan_interval_secs`,
+      `open_positions`, `signals_today`, `scans_today`.
+      `IpcCommand::SetStrategyEnabled { id, enabled }` flips the live
+      AtomicBool and persists to config.toml.
+- [x] **Config persistence**: optional `[strategies.<id>] enabled = bool`
+      table (`#[serde(default)]`, so existing configs load unchanged).
+      `build_strategies(&AppConfig)` consults the map on boot; missing
+      entries default to enabled. Toggle persistence uses `toml_edit`
+      (not the line-based rewrite that handles `mode = "..."`) so comments
+      and section ordering in config.toml survive the rewrite.
+- [x] **Stats source**: new `Database::scan_tally_today(strategy_id) →
+      (total, entered)` query — counts scan_results rows from UTC midnight
+      filtered by `strategy_id`. Fast enough to call per `GetStrategies`
+      request; no caching needed at the current scale.
+- [x] **Position attribution**: `Position` IPC type gains a
+      `strategy_id: Option<String>` field. The IPC `fetch_positions`
+      handler reads `OpenPositionMeta::strategy_id` from the in-memory
+      map; positions Alpaca returns that we don't have meta for (manual
+      positions, restart-orphans) render as `null` → "manual" badge in
+      the UI.
+- [x] **Web backend**: `GET /api/strategies` and
+      `POST /api/strategies/:id/enabled` proxied to the daemon.
+- [x] **React `StrategiesPanel`**: rows show the strategy badge,
+      scan-interval, open positions, signals today, scans today, and a
+      toggle switch. Per-row pending flag disables only the toggled row
+      while the request is in flight.
+- [x] **`PositionsPanel` strategy column**: small chip per position so
+      the operator can tell at a glance which strategy each line item
+      came from. Color per strategy id (Forge = orange, Iron Condor =
+      purple in Phase 3, manual = gray).
+- [x] **`useDashboard` hook**: strategies fetched on mount + every 15s,
+      and `refresh.strategies` exposed so the panel can re-poll
+      immediately after a successful toggle.
+- [x] **End-to-end smoke test**: raw `nc -U /tmp/ferrum.sock` confirms
+      the round trip — `GetStrategies` returns enabled=true, toggle off
+      writes `[strategies.forge] enabled = false` to disk, next
+      `GetStrategies` returns enabled=false, toggle on restores. Comments
+      in config.toml verified intact after rewrites.
+- [x] Build clean (`cargo build --workspace` + `npm run build` in `web/`),
+      zero warnings.
+

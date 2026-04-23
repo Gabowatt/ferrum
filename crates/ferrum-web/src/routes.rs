@@ -1,7 +1,7 @@
 use std::{convert::Infallible, sync::Arc};
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -122,6 +122,37 @@ pub async fn post_stop(State(_s): State<Arc<AppState>>) -> Api {
         Some(IpcResponse::Ok)                  => ok(json!({ "ok": true })),
         Some(IpcResponse::Error { message })   => bad(&message),
         _                                       => unavailable(),
+    }
+}
+
+// ── GET /api/strategies ───────────────────────────────────────────────────────
+
+pub async fn get_strategies(State(_s): State<Arc<AppState>>) -> Api {
+    match send_ipc(IpcCommand::GetStrategies).await {
+        Some(IpcResponse::Strategies { strategies }) => {
+            ok(serde_json::to_value(strategies).unwrap_or(json!([])))
+        }
+        _ => unavailable(),
+    }
+}
+
+// ── POST /api/strategies/:id/enabled ──────────────────────────────────────────
+//
+// Body: { "enabled": true | false }. Daemon flips the live AtomicBool and
+// rewrites `[strategies.<id>].enabled` in config.toml.
+
+#[derive(Deserialize)]
+pub struct StrategyEnabledBody { enabled: bool }
+
+pub async fn post_strategy_enabled(
+    State(_s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<StrategyEnabledBody>,
+) -> Api {
+    match send_ipc(IpcCommand::SetStrategyEnabled { id, enabled: body.enabled }).await {
+        Some(IpcResponse::Ok) => ok(json!({ "ok": true })),
+        Some(IpcResponse::Error { message }) => bad(&message),
+        _ => unavailable(),
     }
 }
 

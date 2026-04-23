@@ -837,6 +837,143 @@ body {
   justify-content: flex-end;
 }
 
+/* ── Strategies panel (V2.1 Phase 2) ────────────────────────────────── */
+.strategies-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.strategy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(46, 46, 46, 0.6);
+  transition: background 0.15s;
+}
+
+.strategy-row:last-child { border-bottom: none; }
+.strategy-row:hover { background: var(--tn-bg2); }
+
+.strategy-row__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.strategy-row__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.strategy-row__interval {
+  font-size: 10px;
+  color: var(--tn-comment);
+  font-family: var(--font-mono);
+}
+
+.strategy-row__stats {
+  display: flex;
+  gap: 14px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stat__label {
+  font-size: 9px;
+  color: var(--tn-comment);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.stat__value {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--tn-fg);
+  font-weight: 600;
+}
+
+/* Strategy badge — small chip used in StrategiesPanel + PositionsPanel.
+   Per-strategy color so the eye can group quickly when more strategies
+   land in Phase 3. */
+.strategy-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: lowercase;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.strategy-badge--forge {
+  background: rgba(255, 158, 100, 0.12);
+  border: 1px solid rgba(255, 158, 100, 0.3);
+  color: var(--tn-orange);
+}
+
+.strategy-badge--iron_condor,
+.strategy-badge--ironcondor {
+  background: rgba(187, 154, 247, 0.12);
+  border: 1px solid rgba(187, 154, 247, 0.3);
+  color: var(--tn-purple);
+}
+
+.strategy-badge--manual {
+  background: rgba(85, 85, 85, 0.15);
+  border: 1px solid rgba(85, 85, 85, 0.4);
+  color: var(--tn-comment);
+}
+
+/* Toggle switch */
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--tn-border);
+  background: var(--tn-bg2);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.toggle-switch:disabled { opacity: 0.5; cursor: wait; }
+
+.toggle-switch--on {
+  background: rgba(158, 206, 106, 0.25);
+  border-color: rgba(158, 206, 106, 0.5);
+}
+
+.toggle-switch__knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--tn-comment);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.toggle-switch--on .toggle-switch__knob {
+  transform: translateX(16px);
+  background: var(--tn-green);
+}
+
 /* ── Utility ─────────────────────────────────────────────────────────── */
 .text-mono {
   font-family: var(--font-mono);

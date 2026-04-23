@@ -381,7 +381,29 @@ impl Database {
         Ok(())
     }
 
+    /// V2.1 Phase 2: scan tally for a strategy since UTC midnight today.
+    /// Returns `(total_scans, signals_entered)` — used by the dashboard's
+    /// strategies panel to show daily activity per strategy.
+    pub async fn scan_tally_today(&self, strategy_id: &str) -> Result<(u32, u32), FerrumError> {
+        let midnight = Utc::now().date_naive().and_hms_opt(0, 0, 0)
+            .map(|dt| chrono::DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).to_rfc3339())
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let row = sqlx::query(
+            "SELECT
+               COUNT(*) AS total,
+               SUM(CASE WHEN outcome = 'entered' THEN 1 ELSE 0 END) AS entered
+             FROM scan_results
+             WHERE strategy_id = ? AND timestamp >= ?",
+        )
+        .bind(strategy_id).bind(&midnight)
+        .fetch_one(&self.pool).await?;
+        let total:   i64 = row.try_get("total").unwrap_or(0);
+        let entered: i64 = row.try_get("entered").unwrap_or(0);
+        Ok((total as u32, entered as u32))
+    }
+
     /// Most-recent scan results per symbol (latest N rows total, newest first).
+    #[allow(dead_code)]
     pub async fn recent_scan_results(&self, limit: i64) -> Result<Vec<ScanResult>, FerrumError> {
         let rows = sqlx::query(
             "SELECT timestamp, symbol, regime, score, direction, outcome

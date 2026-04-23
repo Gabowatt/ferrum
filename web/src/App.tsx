@@ -4,6 +4,7 @@ import { PositionsPanel } from "./components/PositionsPanel";
 import { FillsPanel } from "./components/FillsPanel";
 import { PnlPanel } from "./components/PnlPanel";
 import { LogStream } from "./components/LogStream";
+import { StrategiesPanel } from "./components/StrategiesPanel";
 
 export default function App() {
   const {
@@ -14,6 +15,7 @@ export default function App() {
     pdt,
     clock,
     equity,
+    strategies,
     logs,
     newLogIds,
     refresh,
@@ -40,6 +42,10 @@ export default function App() {
 
           {/* Right 40% */}
           <div className="right-column">
+            <StrategiesPanel
+              strategies={strategies}
+              onChange={refresh.strategies}
+            />
             <PnlPanel pnl={pnl} equity={equity} />
           </div>
         </div>

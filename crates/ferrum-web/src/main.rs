@@ -61,6 +61,8 @@ async fn main() {
         .route("/api/start",     post(routes::post_start))
         .route("/api/stop",      post(routes::post_stop))
         .route("/api/mode",      post(routes::post_mode))
+        .route("/api/strategies", get(routes::get_strategies))
+        .route("/api/strategies/{id}/enabled", post(routes::post_strategy_enabled))
         .route("/api/stream",    get(routes::sse_stream))
         .with_state(state);
 
