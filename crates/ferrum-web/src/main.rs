@@ -62,7 +62,10 @@ async fn main() {
         .route("/api/stop",      post(routes::post_stop))
         .route("/api/mode",      post(routes::post_mode))
         .route("/api/strategies", get(routes::get_strategies))
-        .route("/api/strategies/{id}/enabled", post(routes::post_strategy_enabled))
+        // NOTE: axum 0.7 uses `:id` for path params; `{id}` is a literal in 0.7
+        // and only became the param syntax in 0.8. Using `{id}` silently routes
+        // to the static-file fallback → 405. Don't change this without bumping axum.
+        .route("/api/strategies/:id/enabled", post(routes::post_strategy_enabled))
         .route("/api/ticker",    get(routes::get_ticker))
         .route("/api/stream",    get(routes::sse_stream))
         .with_state(state);

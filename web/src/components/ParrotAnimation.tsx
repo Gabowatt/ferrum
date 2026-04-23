@@ -44,7 +44,6 @@ export function ParrotAnimation() {
       >
         {frame}
       </pre>
-      <div className="parrot-caption">party parrot</div>
     </div>
   );
 }

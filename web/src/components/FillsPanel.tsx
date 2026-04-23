@@ -42,6 +42,7 @@ export function FillsPanel({ fills }: FillsPanelProps) {
       {recent.length === 0 ? (
         <div className="empty-state">No fills today</div>
       ) : (
+        <div className="fills-table-wrap">
         <table className="fills-table">
           <thead>
             <tr>
@@ -81,6 +82,7 @@ export function FillsPanel({ fills }: FillsPanelProps) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

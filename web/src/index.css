@@ -86,19 +86,42 @@ body {
   display: grid;
   grid-template-columns: 60fr 40fr;
   gap: 16px;
-  align-items: start;
+  /* Stretch to consume the vertical space between header and log stream so
+     the left-column panels can absorb the leftover gap below them. */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .left-column {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
 }
 
 .right-column {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+}
+
+/* Within the left column the two panels share the leftover height. Each panel
+   becomes a flex column itself so its scrollable body can claim flex:1 while
+   the panel-header stays a fixed strip on top. */
+.left-column > .panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.left-column > .panel > .empty-state,
+.left-column > .panel > .positions-table-wrap,
+.left-column > .panel > .fills-table-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ── Panel base ──────────────────────────────────────────────────────── */
@@ -392,6 +415,12 @@ body {
 
 /* ── Positions panel ─────────────────────────────────────────────────── */
 .positions-table-wrap {
+  overflow-x: auto;
+}
+
+/* Mirror of positions-table-wrap so the FillsPanel body can be turned into a
+   scrollable flex child by the .left-column rules above. */
+.fills-table-wrap {
   overflow-x: auto;
 }
 
