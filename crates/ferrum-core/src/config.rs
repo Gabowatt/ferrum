@@ -50,16 +50,26 @@ impl std::fmt::Display for Mode {
     }
 }
 
+// `key` and `secret` default to empty so the file can omit them entirely
+// when the operator is providing creds via env vars (`ALPACA_PAPER_KEY`,
+// `ALPACA_PAPER_SECRET` for paper; `ALPACA_LIVE_KEY`, `ALPACA_LIVE_SECRET`
+// for live). `AppConfig::load` overlays env vars on top of file values
+// after parsing, then validates that the active mode has both fields
+// populated.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AlpacaCredentials {
+    #[serde(default)]
     pub key:      String,
+    #[serde(default)]
     pub secret:   String,
     pub base_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AlpacaLiveCredentials {
+    #[serde(default)]
     pub key:      String,
+    #[serde(default)]
     pub secret:   String,
     pub base_url: String,
     pub enabled:  bool,
@@ -272,8 +282,33 @@ impl AppConfig {
     pub fn load(path: &str) -> Result<Self, crate::error::FerrumError> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| crate::error::FerrumError::Config(format!("cannot read {path}: {e}")))?;
-        toml::from_str(&contents)
-            .map_err(|e| crate::error::FerrumError::Config(format!("parse error in {path}: {e}")))
+        let mut cfg: Self = toml::from_str(&contents)
+            .map_err(|e| crate::error::FerrumError::Config(format!("parse error in {path}: {e}")))?;
+
+        // Env vars override file-resident creds. Empty values are ignored
+        // so an unset env var doesn't wipe a value that was set in the file.
+        // Order of precedence (high → low): env var → config file → empty.
+        if let Ok(v) = std::env::var("ALPACA_PAPER_KEY")    { if !v.is_empty() { cfg.alpaca.paper.key    = v; } }
+        if let Ok(v) = std::env::var("ALPACA_PAPER_SECRET") { if !v.is_empty() { cfg.alpaca.paper.secret = v; } }
+        if let Ok(v) = std::env::var("ALPACA_LIVE_KEY")     { if !v.is_empty() { cfg.alpaca.live.key     = v; } }
+        if let Ok(v) = std::env::var("ALPACA_LIVE_SECRET")  { if !v.is_empty() { cfg.alpaca.live.secret  = v; } }
+
+        // Validate that the *active* mode actually has creds. Live mode
+        // additionally needs `enabled = true` to be reachable; if it's not
+        // enabled, blank creds are fine — the daemon will just refuse to
+        // arm live trading. We only hard-error when the mode the operator
+        // is asking us to run is missing creds.
+        let (key, secret, label) = match cfg.alpaca.mode {
+            Mode::Paper => (&cfg.alpaca.paper.key, &cfg.alpaca.paper.secret, "PAPER"),
+            Mode::Live  => (&cfg.alpaca.live.key,  &cfg.alpaca.live.secret,  "LIVE"),
+        };
+        if key.is_empty() || secret.is_empty() {
+            return Err(crate::error::FerrumError::Config(format!(
+                "Alpaca {label} credentials missing — set ALPACA_{label}_KEY and \
+                 ALPACA_{label}_SECRET env vars (preferred) or fill them in {path}"
+            )));
+        }
+        Ok(cfg)
     }
 
     pub fn active_base_url(&self) -> &str {

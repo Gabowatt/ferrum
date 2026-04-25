@@ -1,0 +1,176 @@
+[alpaca]
+mode = "paper"
+
+[alpaca.paper]
+# Creds come from env vars: ALPACA_PAPER_KEY / ALPACA_PAPER_SECRET.
+# (key/secret can also be set here, but env vars override the file.)
+base_url = "https://paper-api.alpaca.markets"
+
+[alpaca.live]
+# Creds come from env vars: ALPACA_LIVE_KEY / ALPACA_LIVE_SECRET.
+base_url = "https://api.alpaca.markets"
+enabled  = false
+
+# ── Symbol universe ─────────────────────────────────────────────────────────
+[symbols]
+tier1             = ["SPY", "QQQ", "IWM"]
+# Week 1 cuts (avg < 4): AMZN, AMD, MARA, INTC, VALE.
+# Week 2 cuts: PFE (range avg 0.8) and PLTR (range avg 0.31) — never scored a real signal in their
+# non-choppy regime. Keep RIVN/AAPL/BAC/FCX/T despite low averages — they hit usable scores under
+# trend conditions and contribute to chain coverage.
+tier2             = ["F", "SOFI", "NIO", "RIVN", "HOOD", "SNAP", "AAL", "CLF", "T", "BAC",
+                     "UBER", "LYFT", "FCX", "SIRI"]
+tier3             = ["AAPL", "COIN"]
+tier3_iv_rank_min = 40.0
+
+# Sector mapping — used by RiskGuard.max_sector_positions to prevent
+# concentrated exposure (e.g. two auto names at once). Unlisted symbols
+# are treated as their own sector (so the cap only fires for real clusters).
+[symbols.sectors]
+SPY  = "index"
+QQQ  = "index"
+IWM  = "index"
+AAPL = "tech"
+COIN = "crypto"
+HOOD = "financial"
+SOFI = "financial"
+BAC  = "financial"
+SIRI = "comm"
+T    = "comm"
+SNAP = "comm"
+F    = "auto"
+RIVN = "auto"
+NIO  = "auto"
+UBER = "transport"
+LYFT = "transport"
+AAL  = "transport"
+CLF  = "materials"
+FCX  = "materials"
+
+# ── Liquidity filters ───────────────────────────────────────────────────────
+[liquidity]
+min_open_interest  = 100
+min_daily_volume   = 50
+max_bid_ask_spread = 0.20
+
+# ── Strategy ────────────────────────────────────────────────────────────────
+[strategy]
+name                  = "forge"
+scan_interval_secs    = 60   # Alpaca Plus: safe to scan every minute
+exit_check_interval   = 60
+scan_start_time       = "09:45"
+scan_end_time         = "15:45"
+market_data_cooldown  = 0  # Alpaca Algo Trader Plus: 10k req/min — no per-symbol throttle needed
+
+[strategy.entry]
+# ── Regime-specific thresholds (v2.1) ────────────────────────────────────────
+# Trend-Up / Trend-Down: max 12 pts; Range-Bound: max 10 pts; Choppy: max 10 pts
+trend_min_score            = 6     # 6/12 — week 2 best trend symbol (HOOD) averaged 6.16; was 7
+range_min_score            = 6     # 6/10 required for range-bound entries
+choppy_min_score           = 8     # 8/10 required if allow_choppy = true
+allow_choppy               = false # choppy entries off by default; flip to true at your own risk
+
+# ── Veto thresholds (v2.1 → v2.3 tuning 2026-04-21) ───────────────────────────
+# 0.5 ATR was too tight: 2026-04-21 blocked SIRI 40x on legitimate trend-continuation
+# setups (score=6, trending_up). A trending stock by definition grazes the 20d high,
+# so 0.5 ATR vetoed every realistic continuation entry. 0.25 ATR still filters
+# "literally touching the extreme" climax entries but allows near-high continuations.
+extreme_proximity_atr      = 0.25  # reject if today high/low within 0.25 ATR of 20d extreme
+cooldown_after_close_hours = 4.0   # no new entries within 4h of closing same underlying
+
+# ── Regime classification parameters ─────────────────────────────────────────
+bb_width_min_pct           = 5.0   # min BB width % for range-bound classification
+ema_slope_lookback_bars    = 5     # bars to look back for EMA20 slope direction
+
+# ── Contract filters (unchanged from v2.0) ───────────────────────────────────
+preferred_delta      = 0.35
+delta_min            = 0.30
+delta_max            = 0.45
+dte_min              = 14
+dte_max              = 45
+order_type           = "limit"
+limit_price_method   = "mid"
+
+[strategy.exit]
+# ── Trailing profit target ─────────────────────────────────────────────────────
+# Once P&L hits +15%, start tracking peak. Close if P&L drops 7% below peak.
+# Example: peak=+35% → close trigger at +28%  |  peak=+60% → trigger at +53%
+trailing_activation_pct  = 15.0   # activate trailing once P&L reaches this %
+trailing_trail_gap_pct   = 7.0    # gap between peak P&L and close trigger
+# ── Other exits ───────────────────────────────────────────────────────────────
+min_hold_hours            = 8.0    # stop-loss won't arm until position held this long; emergency stop bypasses
+stop_loss_pct             = 30.0
+emergency_stop_pct        = 50.0
+time_exit_dte             = 10
+theta_exit_dte            = 7
+theta_exit_min_pnl_pct    = 10.0
+dead_money_days           = 5
+dead_money_min_pct        = 5.0
+
+[strategy.regime]
+ema_fast               = 9
+ema_mid                = 20
+ema_slow               = 50
+adx_period             = 14
+adx_trend_threshold    = 22.0  # was 25 — allows more symbols to register as trending
+adx_no_trend_threshold = 17.0  # was 20 — narrows choppy zone; more RangeBound signals
+rsi_period             = 14
+rsi_overbought         = 70.0
+rsi_oversold           = 30.0
+macd_fast              = 12
+macd_slow              = 26
+macd_signal            = 9
+bbands_period          = 20
+bbands_std_dev         = 2.0
+atr_period             = 14
+volume_ma_period       = 20
+
+# ── IV rank engine ──────────────────────────────────────────────────────────
+[iv_engine]
+iv_rank_buy_max        = 60.0
+iv_rank_sweet_min      = 20.0
+iv_rank_sweet_max      = 50.0
+iv_rank_caution_min    = 50.0
+iv_rank_caution_factor = 0.75
+hv_lookback_days       = 20
+
+# ── Position sizing ─────────────────────────────────────────────────────────
+[sizing]
+max_risk_per_trade_pct = 2.5
+max_position_usd       = 200.0
+max_portfolio_risk_pct = 15.0
+max_open_positions     = 4
+min_cash_reserve_pct   = 30.0
+max_sector_positions   = 2
+
+[[sizing.tiers]]
+score_min   = 8
+score_max   = 10
+size_factor = 0.50
+
+[[sizing.tiers]]
+score_min   = 11
+score_max   = 14
+size_factor = 0.75
+
+[[sizing.tiers]]
+score_min   = 15
+score_max   = 25
+size_factor = 1.00
+
+# ── Risk guard ──────────────────────────────────────────────────────────────
+[risk]
+daily_drawdown_pct = 3.0
+halt_equity_floor  = 100.0
+price_sanity_pct   = 20.0
+
+# ── PDT protection ──────────────────────────────────────────────────────────
+[pdt]
+max_day_trades_per_5d = 2
+rolling_window_days   = 5
+emergency_stop_pct    = 50.0   # allow same-day close if losing >= this %
+exceptional_win_pct   = 75.0   # allow same-day close if gaining >= this %
+block_on_limit        = true
+
+[strategies.forge]
+enabled = true
