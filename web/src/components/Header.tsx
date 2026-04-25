@@ -5,13 +5,16 @@ import type {
   TradingMode,
   PdtResponse,
   ClockResponse,
+  TickerEntry,
 } from "../types";
+import { TickerStrip } from "./TickerStrip";
 
 interface HeaderProps {
   status: BotStatus | null;
   mode: TradingMode | null;
   pdt: PdtResponse | null;
   clock: ClockResponse | null;
+  ticker: TickerEntry[];
   onStatusChange: () => Promise<void>;
   onModeChange: () => Promise<void>;
 }
@@ -109,6 +112,7 @@ export function Header({
   mode,
   pdt,
   clock,
+  ticker,
   onStatusChange,
   onModeChange,
 }: HeaderProps) {
@@ -218,6 +222,9 @@ export function Header({
             </div>
           )}
         </div>
+
+        {/* Scrolling ticker — fills the gap between header items and Start/Stop */}
+        <TickerStrip entries={ticker} />
 
         {/* Start / Stop */}
         <div className="header-right">

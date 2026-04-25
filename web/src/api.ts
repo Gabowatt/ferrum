@@ -10,6 +10,8 @@ import type {
   ApiOkResponse,
   ModeResponse,
   TradingMode,
+  StrategyInfo,
+  TickerEntry,
 } from "./types";
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -51,6 +53,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     }),
+
+  getStrategies: () => fetchJson<StrategyInfo[]>("/api/strategies"),
+
+  setStrategyEnabled: (id: string, enabled: boolean) =>
+    fetchJson<ApiOkResponse>(`/api/strategies/${encodeURIComponent(id)}/enabled`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+
+  getTicker: () => fetchJson<TickerEntry[]>("/api/ticker"),
 };
 
 export function createSSEConnection(

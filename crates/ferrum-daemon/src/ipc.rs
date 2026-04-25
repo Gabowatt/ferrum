@@ -7,7 +7,7 @@ use tokio::{
 use tracing::{error, info};
 use serde::Deserialize;
 
-use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position};
+use ferrum_core::types::{BotStatus, IpcCommand, IpcResponse, LogEvent, Position, StrategyInfo, TickerEntry};
 
 use crate::{exit_monitor, strategy, AppState};
 
@@ -90,8 +90,16 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
             }
             *s = BotStatus::Running;
             drop(s);
-            let _ = state.log_tx.send(LogEvent::info("strategy loop started"));
-            tokio::spawn(strategy::run_strategy_loop(state.clone()));
+            // V2.1: spawn one supervisor task per registered strategy handle.
+            // Each loop is responsible for its own scan cadence + enable check;
+            // they all observe the global Stopping flag via `stop_notify`.
+            let ids: Vec<&'static str> = state.strategies.iter().map(|h| h.id).collect();
+            let _ = state.log_tx.send(LogEvent::info(format!(
+                "strategy loops starting: {}", ids.join(", ")
+            )));
+            for handle in &state.strategies {
+                tokio::spawn(strategy::run_strategy_loop(handle.clone(), state.clone()));
+            }
             IpcResponse::Ok
         }
 
@@ -169,7 +177,139 @@ async fn dispatch(cmd: IpcCommand, state: &Arc<AppState>) -> IpcResponse {
                 Err(e)   => IpcResponse::Error { message: e.to_string() },
             }
         }
+
+        IpcCommand::GetStrategies => {
+            // Snapshot per-strategy stats: position count from the in-memory map
+            // and the today scan tally from SQLite. Both are fast enough to do
+            // per request — no need to cache for now.
+            let positions_by_strategy: std::collections::HashMap<&'static str, u32> = {
+                let positions = state.open_positions.lock().await;
+                let mut map: std::collections::HashMap<&'static str, u32> = std::collections::HashMap::new();
+                for meta in positions.values() {
+                    *map.entry(meta.strategy_id).or_insert(0) += 1;
+                }
+                map
+            };
+
+            let mut infos: Vec<StrategyInfo> = Vec::with_capacity(state.strategies.len());
+            for handle in &state.strategies {
+                let (scans_today, signals_today) = state.db.scan_tally_today(handle.id).await
+                    .unwrap_or((0, 0));
+                infos.push(StrategyInfo {
+                    id:                 handle.id.to_string(),
+                    enabled:            handle.is_enabled(),
+                    scan_interval_secs: handle.scan_interval.as_secs(),
+                    open_positions:     positions_by_strategy.get(handle.id).copied().unwrap_or(0),
+                    signals_today,
+                    scans_today,
+                });
+            }
+            IpcResponse::Strategies { strategies: infos }
+        }
+
+        IpcCommand::SetStrategyEnabled { id, enabled } => {
+            // 1. Find handle by id; flip the AtomicBool live.
+            let handle = state.strategies.iter().find(|h| h.id == id);
+            let Some(handle) = handle else {
+                return IpcResponse::Error { message: format!("unknown strategy id: {id}") };
+            };
+            handle.set_enabled(enabled);
+
+            // 2. Persist to config.toml so the choice survives a daemon restart.
+            //    Loss of the live flag here would only mean the AtomicBool is
+            //    correct in this process; logging it loud + returning Error so
+            //    the UI surfaces the persistence failure to the operator.
+            let cfg_path = std::env::var("FERRUM_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
+            match set_strategy_enabled_in_config(&cfg_path, &id, enabled) {
+                Ok(()) => {
+                    let state_str = if enabled { "enabled" } else { "disabled" };
+                    let _ = state.log_tx.send(LogEvent::info(format!(
+                        "strategy '{id}' {state_str} (live + persisted to {cfg_path})"
+                    )));
+                    IpcResponse::Ok
+                }
+                Err(e) => {
+                    let _ = state.log_tx.send(LogEvent::error(format!(
+                        "strategy '{id}' live-toggled but config write failed: {e}"
+                    )));
+                    IpcResponse::Error { message: format!("config write failed: {e}") }
+                }
+            }
+        }
+
+        IpcCommand::GetTickerSnapshot => {
+            // One Alpaca call returns snapshots for the entire scan universe.
+            // Latest trade price + previous-day close gives us a stable %-change
+            // even after-hours when the latest quote can drift.
+            let symbols: Vec<String> = state.config.symbols.all().iter().map(|s| s.to_string()).collect();
+            if symbols.is_empty() {
+                return IpcResponse::TickerSnapshot { entries: vec![] };
+            }
+            match fetch_ticker_snapshot(&state.client, &symbols).await {
+                Ok(entries) => IpcResponse::TickerSnapshot { entries },
+                Err(e)      => IpcResponse::Error { message: e.to_string() },
+            }
+        }
     }
+}
+
+// ── Ticker snapshot helper ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StockSnapshotsResponse {
+    #[serde(flatten)]
+    by_symbol: std::collections::HashMap<String, StockSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockSnapshot {
+    #[serde(rename = "latestTrade")]
+    latest_trade:   Option<StockTrade>,
+    #[serde(rename = "dailyBar")]
+    daily_bar:      Option<StockBar>,
+    #[serde(rename = "prevDailyBar")]
+    prev_daily_bar: Option<StockBar>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockTrade {
+    #[serde(rename = "p")] price: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockBar {
+    #[serde(rename = "c")] close: f64,
+}
+
+async fn fetch_ticker_snapshot(
+    client: &ferrum_core::client::AlpacaClient,
+    symbols: &[String],
+) -> Result<Vec<TickerEntry>, ferrum_core::error::FerrumError> {
+    let csv = symbols.join(",");
+    let resp: StockSnapshotsResponse = client
+        .get_data_with_query(
+            "/v2/stocks/snapshots",
+            &[("symbols", csv.as_str()), ("feed", "iex")],
+        )
+        .await?;
+
+    // Preserve the configured order so tier1 indices lead the marquee.
+    let mut entries = Vec::with_capacity(symbols.len());
+    for sym in symbols {
+        let Some(snap) = resp.by_symbol.get(sym) else { continue; };
+        // Price preference: latest trade > today's bar close > prev close.
+        let price = snap.latest_trade.as_ref().map(|t| t.price)
+            .or(snap.daily_bar.as_ref().map(|b| b.close))
+            .or(snap.prev_daily_bar.as_ref().map(|b| b.close));
+        let prev  = snap.prev_daily_bar.as_ref().map(|b| b.close);
+        let Some(p) = price else { continue; };
+        let change_pct = match prev {
+            Some(pc) if pc > 0.0 => (p - pc) / pc,
+            _ => 0.0,
+        };
+        entries.push(TickerEntry { symbol: sym.clone(), price: p, change_pct });
+    }
+    Ok(entries)
 }
 
 // ── Alpaca position helper ─────────────────────────────────────────────────────
@@ -196,16 +336,18 @@ async fn fetch_positions(state: &AppState) -> Result<Vec<Position>, ferrum_core:
         let cost_basis:      f64 = ap.cost_basis.parse().unwrap_or(0.0);
         let entry_price = if qty != 0.0 { cost_basis / (qty * 100.0) } else { 0.0 };
 
-        let (underlying, direction, opened_at) = match open.get(&ap.symbol) {
+        let (underlying, direction, opened_at, strategy_id) = match open.get(&ap.symbol) {
             Some(meta) => (
                 meta.underlying.clone(),
                 meta.direction.clone(),
                 meta.opened_at,
+                Some(meta.strategy_id.to_string()),
             ),
             None => (
                 ap.symbol.clone(),
                 if ap.symbol.contains('C') { "call".to_string() } else { "put".to_string() },
                 chrono::Utc::now(),
+                None,  // legacy / manual position with no strategy attribution
             ),
         };
 
@@ -220,6 +362,7 @@ async fn fetch_positions(state: &AppState) -> Result<Vec<Position>, ferrum_core:
             unrealized_pl,
             unrealized_plpc,
             opened_at,
+            strategy_id,
         }
     }).collect();
 
@@ -331,6 +474,48 @@ async fn fetch_equity_history(
         .unwrap_or_default();
 
     Ok(IpcResponse::EquityHistory { timestamps, equity })
+}
+
+/// Persist `[strategies.<id>].enabled = <bool>` to config.toml, preserving
+/// comments + ordering. Creates the section/key if missing.
+///
+/// Uses `toml_edit` (vs. the line-based approach `toggle_mode_in_config` uses
+/// for the top-level `mode` key) because we may need to insert a brand-new
+/// nested table — line splicing for that is fragile.
+fn set_strategy_enabled_in_config(path: &str, id: &str, enabled: bool) -> Result<(), String> {
+    use toml_edit::{value, DocumentMut, Item, Table};
+
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {path}: {e}"))?;
+    let mut doc: DocumentMut = raw.parse()
+        .map_err(|e| format!("parse {path}: {e}"))?;
+
+    // Ensure top-level `[strategies]` table exists. Using `or_insert` with a
+    // freshly-constructed table preserves anything the user might have already
+    // put there.
+    let strategies = doc
+        .as_table_mut()
+        .entry("strategies")
+        .or_insert(Item::Table(Table::new()));
+
+    let Item::Table(strategies_tbl) = strategies else {
+        return Err("[strategies] is present but not a table".into());
+    };
+    // Mark as implicit so the resulting TOML stays as `[strategies.<id>]`
+    // (subtable headers) instead of becoming an inline `strategies = { ... }`.
+    strategies_tbl.set_implicit(true);
+
+    let entry = strategies_tbl
+        .entry(id)
+        .or_insert(Item::Table(Table::new()));
+
+    let Item::Table(entry_tbl) = entry else {
+        return Err(format!("[strategies.{id}] is present but not a table"));
+    };
+    entry_tbl["enabled"] = value(enabled);
+
+    std::fs::write(path, doc.to_string())
+        .map_err(|e| format!("write {path}: {e}"))
 }
 
 fn toggle_mode_in_config(path: &str, mode: &str) -> std::io::Result<()> {

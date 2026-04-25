@@ -2,6 +2,7 @@
 members = [
     "crates/ferrum-core",
     "crates/ferrum-daemon",
+    "crates/ferrum-report",
     "crates/ferrum-web",
 ]
 resolver = "2"
@@ -11,6 +12,7 @@ tokio              = { version = "1", features = ["full"] }
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
 toml               = "0.8"
+toml_edit          = "0.22"
 reqwest            = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 thiserror          = "2"
 chrono             = { version = "0.4", features = ["serde"] }

@@ -9,6 +9,8 @@ import type {
   PdtResponse,
   ClockResponse,
   EquityResponse,
+  StrategyInfo,
+  TickerEntry,
 } from "../types";
 
 const MAX_LOG_ENTRIES = 500;
@@ -21,6 +23,8 @@ interface DashboardState {
   pdt: PdtResponse | null;
   clock: ClockResponse | null;
   equity: EquityResponse | null;
+  strategies: StrategyInfo[];
+  ticker: TickerEntry[];
   logs: LogEvent[];
   newLogIds: Set<number>;
   error: string | null;
@@ -34,6 +38,8 @@ type DashboardAction =
   | { type: "SET_PDT"; payload: PdtResponse }
   | { type: "SET_CLOCK"; payload: ClockResponse }
   | { type: "SET_EQUITY"; payload: EquityResponse }
+  | { type: "SET_STRATEGIES"; payload: StrategyInfo[] }
+  | { type: "SET_TICKER"; payload: TickerEntry[] }
   | { type: "SET_LOGS"; payload: LogEvent[] }
   | { type: "APPEND_LOG"; payload: LogEvent }
   | { type: "CLEAR_NEW_LOG"; payload: number }
@@ -68,6 +74,10 @@ function reducer(
       return { ...state, clock: action.payload };
     case "SET_EQUITY":
       return { ...state, equity: action.payload };
+    case "SET_STRATEGIES":
+      return { ...state, strategies: action.payload };
+    case "SET_TICKER":
+      return { ...state, ticker: action.payload };
     case "SET_LOGS": {
       const indexed = action.payload.map((l) => ({
         ...l,
@@ -103,6 +113,8 @@ const initialState: IndexedDashboardState = {
   pdt: null,
   clock: null,
   equity: null,
+  strategies: [],
+  ticker: [],
   logs: [],
   newLogIds: new Set(),
   error: null,
@@ -114,6 +126,7 @@ export interface DashboardData extends Omit<IndexedDashboardState, "logs"> {
     status: () => Promise<void>;
     positions: () => Promise<void>;
     fills: () => Promise<void>;
+    strategies: () => Promise<void>;
   };
 }
 
@@ -184,6 +197,26 @@ export function useDashboard(): DashboardData {
     }
   }, [safeDispatch]);
 
+  const fetchStrategies = useCallback(async () => {
+    try {
+      const data = await api.getStrategies();
+      safeDispatch({ type: "SET_STRATEGIES", payload: data });
+    } catch (e) {
+      safeDispatch({ type: "SET_ERROR", payload: String(e) });
+    }
+  }, [safeDispatch]);
+
+  const fetchTicker = useCallback(async () => {
+    try {
+      const data = await api.getTicker();
+      safeDispatch({ type: "SET_TICKER", payload: data });
+    } catch (e) {
+      // Silent — ticker is decorative; an upstream Alpaca hiccup
+      // shouldn't redline the dashboard banner.
+      console.warn("ticker fetch failed", e);
+    }
+  }, [safeDispatch]);
+
   useEffect(() => {
     mountedRef.current = true;
 
@@ -194,6 +227,8 @@ export function useDashboard(): DashboardData {
     fetchPnl();
     fetchPdt();
     fetchClock();
+    fetchStrategies();
+    fetchTicker();
 
     // Fetch equity once on mount
     api
@@ -213,6 +248,10 @@ export function useDashboard(): DashboardData {
       setInterval(fetchPositions, 10_000),
       setInterval(fetchPdt, 10_000),
       setInterval(fetchFills, 15_000),
+      setInterval(fetchStrategies, 15_000),
+      // Ticker refresh — Alpaca snapshots cost one HTTP per call no matter
+      // how many symbols, so 15s is plenty for a marquee.
+      setInterval(fetchTicker, 15_000),
       setInterval(fetchPnl, 30_000),
       setInterval(fetchClock, 60_000),
     ];
@@ -227,7 +266,7 @@ export function useDashboard(): DashboardData {
       intervals.forEach(clearInterval);
       es.close();
     };
-  }, [fetchStatus, fetchPositions, fetchFills, fetchPnl, fetchPdt, fetchClock, safeDispatch]);
+  }, [fetchStatus, fetchPositions, fetchFills, fetchPnl, fetchPdt, fetchClock, fetchStrategies, fetchTicker, safeDispatch]);
 
   return {
     ...state,
@@ -235,6 +274,7 @@ export function useDashboard(): DashboardData {
       status: fetchStatus,
       positions: fetchPositions,
       fills: fetchFills,
+      strategies: fetchStrategies,
     },
   };
 }

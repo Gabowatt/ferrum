@@ -100,6 +100,7 @@ async fn poll_orders(state: &AppState) -> Result<(), ferrum_core::error::FerrumE
                             let dte = crate::exit_monitor::dte_from_occ_symbol(&contract)
                                 .unwrap_or(0);
                             let _ = state.db.insert_trade_log(
+                                meta.strategy_id, None,
                                 &contract, &meta.underlying, &meta.direction,
                                 "close", close_price, meta.qty as i64,
                                 Some(meta.confluence_score as i64),

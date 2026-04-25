@@ -207,3 +207,251 @@ Forward-looking work lives in `/TODO.md`.
 - [x] TODO restructured around the V2.1 phased delivery (registry → toggle UI
       → Iron Condor strategy).
 
+## V2.1 Phase 1 — Forge rename (2026-04-21)
+
+- [x] `IronConduitStrategy` → `ForgeStrategy` in `crates/ferrum-daemon/src/strategy.rs`
+      (struct, impl, instantiation in `run_strategy_loop`).
+- [x] All `[iron-conduit]` log prefixes → `[forge]` (16 sites).
+- [x] `config.toml`: `[strategy] name = "iron-conduit"` → `"forge"`.
+- [x] `docs/ferrum-iron-conduit-strategy.md` → `docs/ferrum-forge-strategy.md`
+      (git-tracked rename); title + codename + §13 config example updated.
+- [x] README: strategy section retitled "Forge — Multi-Regime Long Options v2.2";
+      file references updated; multi-strategy-plan.md added to docs tree.
+- [x] Build verified clean (zero warnings).
+
+## V2.1 Phase 1 — DB migration for strategy_id (2026-04-21)
+
+- [x] `db.rs::migrate()` now adds `strategy_id TEXT NOT NULL DEFAULT 'forge'`
+      to `fills`, `trade_log`, and `scan_results`, plus nullable `position_id`
+      to `trade_log` (Phase 3 will use it to group condor legs).
+- [x] Fresh DBs get the columns via the `CREATE TABLE` bodies; existing DBs
+      get them via an idempotent `ALTER TABLE` pass that inspects
+      `PRAGMA table_info` first (no SQLite "duplicate column" errors on
+      reboot).
+- [x] Migration SQL verified against a copy of the live `ferrum.db`
+      (10,764 existing scan_results rows backfilled to 'forge' as expected).
+- [x] Writers unchanged in this commit — defaults keep them working. A later
+      commit threads an explicit `strategy_id` parameter through them.
+
+## V2.1 Phase 1 — Strategy registry + multi-loop supervisor (2026-04-21)
+
+- [x] `Strategy` trait now exposes `id() -> &'static str` (used as the
+      `strategy_id` tag in DB rows + in IPC payloads).
+- [x] New `StrategyHandle { id, scan_interval, enabled: AtomicBool, strategy }`
+      wraps `Arc<dyn Strategy>` for the supervisor. `enabled` is reserved for
+      Phase 2's live-toggle IPC; for now it always starts true.
+- [x] `strategy::build_strategies(&AppConfig) -> Vec<Arc<StrategyHandle>>` is
+      the single source of truth for which strategies the daemon hosts. Phase 1
+      ships only Forge; Phase 3 adds Iron Condor here.
+- [x] `AppState.strategies` carries the registry; `AppState.active_strategy_loops`
+      (`AtomicUsize`) lets multiple supervisor tasks coordinate the
+      `Stopping → Idle` transition without races (last loop out flips the bit).
+- [x] `run_strategy_loop` now takes `Arc<StrategyHandle>` + `Arc<AppState>`,
+      logs every event with the handle's `id`, and gates each cycle on
+      `handle.is_enabled()` so Phase 2 only has to flip the flag.
+- [x] IPC `Start` iterates `state.strategies` and spawns one supervisor task
+      per handle. `Stop` is unchanged — the existing `stop_notify` ping wakes
+      every loop simultaneously.
+- [x] Behavior preserved: with one registered strategy (Forge) the runtime
+      shape matches V2 exactly — same scan cadence, same logs (now prefixed
+      `[forge]` already from Commit A), same risk + PDT path.
+- [x] Build clean, zero warnings.
+
+## V2.1 Phase 1 — strategy_id threaded through writers (2026-04-21)
+
+- [x] `OpenPositionMeta` gains `strategy_id: &'static str` (first field). The
+      static lifetime falls out of `Strategy::id()` returning `&'static str`,
+      so we never allocate per-position just to remember which strategy
+      opened it.
+- [x] `db::insert_scan_result` and `db::insert_trade_log` take `strategy_id`
+      explicitly. `insert_trade_log` also takes `position_id: Option<&str>`
+      now — Phase 1 always passes `None`; Phase 3 will use it to group the
+      four legs of an Iron Condor under one synthetic position id.
+- [x] Strategy scan loop binds `let strategy_id = self.id();` once at the top
+      of `scan()` and passes it to all six `insert_scan_result` callsites
+      (every veto + the eventual signal). One source of truth per scan cycle.
+- [x] `submit_signal_orders(...)` takes `strategy_id` and stamps it onto the
+      new `OpenPositionMeta` and the `insert_trade_log` open-row write — so
+      every entry row in `trade_log` is attributed without relying on the
+      DB-side default.
+- [x] `exit_monitor.rs` and `order_poller.rs` close-side `insert_trade_log`
+      calls forward `meta.strategy_id` (and `None` for `position_id`).
+- [x] Fills (Alpaca activities API) keep the DB-side `DEFAULT 'forge'`. Adding
+      explicit per-fill attribution needs an `order_id → strategy_id` lookup
+      map — deferred to Phase 2 alongside the IPC live-toggle work.
+- [x] Build clean, zero warnings. Phase 1 of the multi-strategy plan is
+      complete; runtime behavior is identical to V2 but the daemon is now
+      shaped for N strategies.
+
+## V2.1 Phase 2 — Live strategy toggles + UI plumbing (2026-04-22)
+
+End-to-end live enable/disable for strategies, persisted to config.toml,
+plumbed all the way to a React `StrategiesPanel`. Daemon still hosts only
+Forge; the same wiring will light up automatically when Iron Condor lands
+in Phase 3.
+
+- [x] **IPC contract**: new `IpcCommand::GetStrategies` returns a
+      `Vec<StrategyInfo>` with `id`, `enabled`, `scan_interval_secs`,
+      `open_positions`, `signals_today`, `scans_today`.
+      `IpcCommand::SetStrategyEnabled { id, enabled }` flips the live
+      AtomicBool and persists to config.toml.
+- [x] **Config persistence**: optional `[strategies.<id>] enabled = bool`
+      table (`#[serde(default)]`, so existing configs load unchanged).
+      `build_strategies(&AppConfig)` consults the map on boot; missing
+      entries default to enabled. Toggle persistence uses `toml_edit`
+      (not the line-based rewrite that handles `mode = "..."`) so comments
+      and section ordering in config.toml survive the rewrite.
+- [x] **Stats source**: new `Database::scan_tally_today(strategy_id) →
+      (total, entered)` query — counts scan_results rows from UTC midnight
+      filtered by `strategy_id`. Fast enough to call per `GetStrategies`
+      request; no caching needed at the current scale.
+- [x] **Position attribution**: `Position` IPC type gains a
+      `strategy_id: Option<String>` field. The IPC `fetch_positions`
+      handler reads `OpenPositionMeta::strategy_id` from the in-memory
+      map; positions Alpaca returns that we don't have meta for (manual
+      positions, restart-orphans) render as `null` → "manual" badge in
+      the UI.
+- [x] **Web backend**: `GET /api/strategies` and
+      `POST /api/strategies/:id/enabled` proxied to the daemon.
+- [x] **React `StrategiesPanel`**: rows show the strategy badge,
+      scan-interval, open positions, signals today, scans today, and a
+      toggle switch. Per-row pending flag disables only the toggled row
+      while the request is in flight.
+- [x] **`PositionsPanel` strategy column**: small chip per position so
+      the operator can tell at a glance which strategy each line item
+      came from. Color per strategy id (Forge = orange, Iron Condor =
+      purple in Phase 3, manual = gray).
+- [x] **`useDashboard` hook**: strategies fetched on mount + every 15s,
+      and `refresh.strategies` exposed so the panel can re-poll
+      immediately after a successful toggle.
+- [x] **End-to-end smoke test**: raw `nc -U /tmp/ferrum.sock` confirms
+      the round trip — `GetStrategies` returns enabled=true, toggle off
+      writes `[strategies.forge] enabled = false` to disk, next
+      `GetStrategies` returns enabled=false, toggle on restores. Comments
+      in config.toml verified intact after rewrites.
+- [x] Build clean (`cargo build --workspace` + `npm run build` in `web/`),
+      zero warnings.
+
+## V2.1 dashboard polish — 2026-04-22
+
+Three quality-of-life passes after Phase 2 testing surfaced rough edges.
+
+- [x] **StrategiesPanel toggle bug — root-caused & fixed.** The Forge
+      toggle never visually flipped off in the browser, even though the
+      raw-socket Phase 2 test was green. Two compounding causes:
+  - `crates/ferrum-web/src/main.rs` registered the route as
+    `/api/strategies/{id}/enabled`. axum 0.7 only adopted `{}` param
+    syntax in 0.8 — in 0.7 it's a literal segment, so the POST never
+    matched the API router and fell through to the static-file
+    fallback (GET-only) → 405 Method Not Allowed. Fixed by switching
+    to `:id` and dropping a comment so a future axum bump doesn't
+    regress it.
+  - `web/src/components/StrategiesPanel.tsx` had no optimistic UI and
+    silently `console.error`'d failures. Even when the route was
+    eventually fixed, a slow round-trip looked like a no-op. Now the
+    toggle flips locally on click, an in-flight `pending` flag
+    disables only the toggled row, and any API failure reverts the
+    optimistic flip and surfaces an inline red `toggle failed: …`
+    string under the row. Errors stop being mysteries.
+- [x] **Hide-PnL parrot.** New toggle in the PnlPanel header (mirrors
+      the strategy-toggle styling, floats right via
+      `.panel-header > .toggle-switch { margin-left: auto }`). When off,
+      the panel body swaps for a `<ParrotAnimation>` — the 10 frames
+      under `web/src/parrot/{0..9}.txt` are the unmodified ASCII files
+      from `hugomd/parrot.live`, loaded via Vite's `?raw` import (so the
+      source-of-truth is the original .txt files; zero risk of leading-
+      whitespace drift). Cycles at 70 ms with a 36°/frame hue step so a
+      full rainbow completes once per parrot loop. Preference persists
+      in `sessionStorage` (intentional — survives F5 but not a fresh
+      browser session). `web/src/vite-env.d.ts` added with `?raw` module
+      declaration so TypeScript stops complaining.
+- [x] **Header ticker strip.** Nasdaq-style scrolling marquee between
+      the PDT counter and Start/Stop. New
+      `IpcCommand::GetTickerSnapshot` calls Alpaca
+      `/v2/stocks/snapshots?symbols=…&feed=iex` once for the entire
+      `cfg.symbols.all()` universe — `latestTrade.p` for price,
+      `prevDailyBar.c` for the day-change baseline. New
+      `IpcResponse::TickerSnapshot { entries: Vec<TickerEntry> }` and
+      `TickerEntry { symbol, price, change_pct }` in
+      `ferrum-core/types.rs`. New `/api/ticker` route, `getTicker()` in
+      `web/src/api.ts`, polled every 15 s by `useDashboard`. Failures
+      log to `console.warn` only — the strip is decorative and a
+      transient Alpaca hiccup shouldn't redline the dashboard. The
+      `<TickerStrip>` renders two stitched copies of the tape inside a
+      `.ticker-track` that animates `translateX(-50%)` over 60 s; copy
+      #2 lines up exactly where copy #1 started → seamless loop with no
+      jump. Edge mask fades items in/out, hover pauses the animation.
+      Up/down/flat coloring per item.
+- [x] **Left-column panels fill leftover height.** `.main-grid` now
+      claims `flex: 1 1 auto; min-height: 0` (was `align-items: start`
+      which sized columns to content), `.left-column > .panel` becomes a
+      `flex: 1 1 0` flex column, and each panel body
+      (`.positions-table-wrap` / a new matching `.fills-table-wrap`) is
+      `flex: 1 1 0; min-height: 0; overflow-y: auto`. Result: Positions
+      and Recent Fills evenly share the available vertical gap and each
+      table scrolls independently when overstuffed. No more dead
+      whitespace below either box.
+- [x] Dropped the "party parrot" caption beneath the ASCII art —
+      operator preference; the bird carries itself.
+- [x] Build clean (`cargo build --workspace` + `npm run build`),
+      zero warnings. Commits: `9817da3` (UX additions),
+      `2bb2e6d` (axum 0.7 fix + caption + stretch).
+
+## V2.1 weekly review report — 2026-04-24
+
+Last feature for V2.1 before tagging — turns the eyeball-the-logs
+weekend ritual into a reproducible markdown digest.
+
+- [x] **New `crates/ferrum-report` workspace member.** Single-binary
+      crate (`ferrum-report`) with a tight dep footprint — `tokio`,
+      `sqlx`, `chrono`. No daemon code, no toml parsing; opens the DB
+      with `mode=ro` and `max_connections=1` so it can never step on a
+      live daemon. Args parsed by hand to avoid pulling in clap.
+- [x] **CLI surface.** `ferrum-report [--week=YYYY-Www] [--db=<path>]
+      [--out=<dir>]`. Defaults: current ISO week (via
+      `chrono::Utc::now().iso_week()`), `~/.local/share/ferrum/ferrum.db`
+      (the real XDG-style path the daemon writes — TODO previously
+      claimed `~/.ferrum/ferrum.db`, which was wrong), and
+      `docs/reports/`. Output filename uses the Friday-of-week date so
+      the cron entry stays idempotent.
+- [x] **Sections rendered** (all data-driven from the DB, no manual
+      input besides the verdict line):
+  - Headline — scans, signals entered, fills, closed-trade P&L,
+    day-trade budget consumption.
+  - **Why buys were low** — narrative funnel that walks regime gate →
+    score gate → extreme-proximity veto → no-contracts veto →
+    downstream risk caps (sector, max-open, PDT, buying power). Each
+    bullet is templated against the real counts so the prose reads
+    like a human wrote it.
+  - Scan summary by regime + per-symbol table.
+  - Veto + risk-block breakdown — categorised from `log_events.level
+    = 'RISK'` via `CASE WHEN message LIKE …` (sector_cap,
+    max_open_positions, pdt_block, cooldown, cash_reserve,
+    portfolio_risk).
+  - Near-miss table — counts for `score = threshold − 1` per regime,
+    so the operator can see how many signals would convert if a
+    threshold dropped by 1.
+  - Entries + exits — fills-by-day, closed trades with exit reason +
+    P&L, day-trade ledger (with `was_emergency` flag), open
+    positions at end of week.
+  - **PDT-transition notes** — derived inputs for V2.2 Theme B.
+    Counts day-trade slots used, calls out losing day-trades as the
+    "worst-case" PDT scenario, surfaces sector-cap and
+    max-open-positions as the next constraints once PDT is gone, and
+    flags buying-power errors as the future binding ceiling. Closes
+    with the action-items list (config flag, code paths to gate,
+    dashboard counter handling).
+- [x] **Verdict placeholder.** Top of every report has a
+      `> _operator: write a one-line verdict here before tuning._`
+      blockquote. Intentionally not auto-filled — the verdict is the
+      one thing the report can't write itself.
+- [x] **First real run** — `cargo run -p ferrum-report` after Friday's
+      close. 2026-W17 covers Mon 04-20 → Fri 04-24. Headline numbers
+      cross-checked against direct DB queries (20,590 scans, 302
+      entered, 2/2 day trades, $-5.00 realised). Output committed at
+      [`docs/reports/2026-04-24.md`](../reports/2026-04-24.md).
+- [x] **TODO updated** — V2.1 weekly-report tasks ticked off; the
+      cron-scheduling line stays in V2.2 Theme A's homelab checklist
+      (depends on the homelab being online).
+- [x] Build clean (`cargo build --workspace`), zero warnings.
+

@@ -96,6 +96,13 @@ pub enum IpcCommand {
     GetPdt,
     GetMarketClock,
     GetLogs { limit: u32 },
+    /// V2.1 Phase 2: list registered strategies + per-strategy live stats.
+    GetStrategies,
+    /// V2.1 Phase 2: live-toggle a strategy and persist the choice to config.toml.
+    SetStrategyEnabled { id: String, enabled: bool },
+    /// Live price snapshot for the configured scan universe — used by the
+    /// header ticker strip. Returns price + day-change % per symbol.
+    GetTickerSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,8 +142,48 @@ pub enum IpcResponse {
         timestamps: Vec<i64>,   // unix milliseconds
         equity:     Vec<f64>,
     },
+    /// V2.1 Phase 2: list of registered strategies + live stats.
+    Strategies {
+        strategies: Vec<StrategyInfo>,
+    },
+    /// Live ticker snapshot for the scan universe (header marquee).
+    TickerSnapshot {
+        entries: Vec<TickerEntry>,
+    },
     /// Server → client push: streamed log event
     LogEvent(LogEvent),
+}
+
+// ── Ticker snapshot entry ─────────────────────────────────────────────────────
+//
+// One row per scanned symbol for the header's Nasdaq-style scrolling banner.
+// `change_pct` is a fraction (0.0125 = +1.25 %); the UI formats display.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TickerEntry {
+    pub symbol:     String,
+    pub price:      f64,
+    pub change_pct: f64,
+}
+
+// ── Strategy registry info (V2.1 Phase 2) ────────────────────────────────────
+//
+// Mirror of `daemon::strategy::StrategyHandle` enriched with per-strategy stats
+// the dashboard cares about (open positions, scan tally for today). Sent in
+// response to `IpcCommand::GetStrategies`.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyInfo {
+    pub id:                  String,
+    pub enabled:             bool,
+    pub scan_interval_secs:  u64,
+    /// Open positions currently attributed to this strategy.
+    pub open_positions:      u32,
+    /// Number of scan_results rows with `outcome = 'entered'` and matching
+    /// `strategy_id` since UTC midnight.
+    pub signals_today:       u32,
+    /// Total scan_results rows for this strategy since UTC midnight (any outcome).
+    pub scans_today:         u32,
 }
 
 // ── Position ──────────────────────────────────────────────────────────────────
@@ -153,6 +200,11 @@ pub struct Position {
     pub unrealized_pl:   f64,
     pub unrealized_plpc: f64,   // as fraction e.g. 0.15 = 15%
     pub opened_at:       DateTime<Utc>,
+    /// V2.1 Phase 2: which strategy owns this position. `None` when the position
+    /// pre-dates strategy attribution (legacy DB rows) or was opened outside
+    /// the registry (manual order on Alpaca side).
+    #[serde(default)]
+    pub strategy_id:     Option<String>,
 }
 
 // ── Fill records ──────────────────────────────────────────────────────────────

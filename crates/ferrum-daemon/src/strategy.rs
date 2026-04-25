@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::error;
@@ -7,6 +8,7 @@ use chrono::{Datelike, Timelike, Utc};
 
 use ferrum_core::{
     client::AlpacaClient,
+    config::AppConfig,
     error::FerrumError,
     indicators::{self, BarContext, TradeDirection},
     types::{BotStatus, FillRecord, LegAction, LogEvent, OptionLeg, OrderType, Signal},
@@ -18,11 +20,74 @@ use crate::{
     AppState, OpenPositionMeta,
 };
 
-// ── Strategy trait ────────────────────────────────────────────────────────────
+// ── Strategy trait + registry ─────────────────────────────────────────────────
+//
+// V2.1 multi-strategy refactor: the daemon hosts a registry of strategies
+// (`AppState.strategies`), each running on its own loop. Phase 1 ships with
+// one strategy (Forge); Phase 3 adds Iron Condor.
+//
+// `Strategy` is the trait every strategy implements. `StrategyHandle` wraps
+// an `Arc<dyn Strategy>` together with runtime state the supervisor needs
+// (scan interval, enabled flag for Phase 2 live toggles).
 
 #[async_trait::async_trait]
 pub trait Strategy: Send + Sync {
+    /// Stable, lowercase identifier — used as `strategy_id` in DB rows and
+    /// in IPC payloads. Must match the `[strategies.<id>]` section that will
+    /// be introduced in Phase 2 of the multi-strategy plan.
+    fn id(&self) -> &'static str;
+
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError>;
+}
+
+pub struct StrategyHandle {
+    pub id:            &'static str,
+    pub scan_interval: Duration,
+    /// Live enable/disable. Phase 1 always starts enabled; Phase 2 wires the
+    /// IPC + UI toggle that flips this without restarting the daemon.
+    pub enabled:       AtomicBool,
+    pub strategy:      Arc<dyn Strategy>,
+}
+
+impl StrategyHandle {
+    pub fn new(strategy: Arc<dyn Strategy>, scan_interval: Duration, enabled: bool) -> Arc<Self> {
+        Arc::new(Self {
+            id: strategy.id(),
+            scan_interval,
+            enabled: AtomicBool::new(enabled),
+            strategy,
+        })
+    }
+
+    pub fn is_enabled(&self) -> bool { self.enabled.load(Ordering::Relaxed) }
+
+    /// Live toggle entry point — IPC `SetStrategyEnabled` flips this and
+    /// (separately) persists the change to `config.toml` so it survives a
+    /// daemon restart.
+    pub fn set_enabled(&self, v: bool) { self.enabled.store(v, Ordering::Relaxed); }
+}
+
+impl std::fmt::Debug for StrategyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StrategyHandle")
+            .field("id", &self.id)
+            .field("scan_interval", &self.scan_interval)
+            .field("enabled", &self.is_enabled())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Build the list of strategy handles registered with the daemon.
+///
+/// Phase 1: only Forge. Phase 3 will add Iron Condor here. The function reads
+/// each strategy's scan interval from `config` so the loop schedule stays
+/// configurable without touching code.
+pub fn build_strategies(config: &AppConfig) -> Vec<Arc<StrategyHandle>> {
+    let forge_interval = Duration::from_secs(config.strategy.scan_interval_secs);
+    let forge_enabled  = config.strategies.get("forge").map(|e| e.enabled).unwrap_or(true);
+    vec![
+        StrategyHandle::new(Arc::new(ForgeStrategy::new()), forge_interval, forge_enabled),
+    ]
 }
 
 // ── Alpaca clock ─────────────────────────────────────────────────────────────
@@ -83,35 +148,51 @@ async fn market_is_open(state: &AppState) -> bool {
     true
 }
 
-// ── Main strategy loop ────────────────────────────────────────────────────────
+// ── Per-strategy supervisor loop ──────────────────────────────────────────────
+//
+// One task per `StrategyHandle`, spawned by `IpcCommand::Start`. The loop
+// scans on the handle's interval, gates on `BotStatus::Running` and the
+// per-handle `enabled` flag, and exits when status becomes `Stopping`.
+//
+// Stop coordination across N loops:
+//   - `state.active_strategy_loops` counts the number of currently-running
+//     supervisor tasks. Each loop increments on entry and decrements on exit.
+//   - The IPC Stop handler sets status to `Stopping` and pings `stop_notify`,
+//     which wakes every loop's interruptible sleep.
+//   - The last loop to exit (post-decrement counter == 0) flips status from
+//     `Stopping` back to `Idle`. This avoids a race where each loop tried to
+//     write `Idle` independently.
 
-pub async fn run_strategy_loop(state: Arc<AppState>) {
-    let entry_interval = Duration::from_secs(state.config.strategy.scan_interval_secs);
-
-    let strategy = IronConduitStrategy::new();
+pub async fn run_strategy_loop(handle: Arc<StrategyHandle>, state: Arc<AppState>) {
+    state.active_strategy_loops.fetch_add(1, Ordering::SeqCst);
+    let strategy_id = handle.id;
 
     loop {
+        // Stop check — break out before any work this cycle.
         {
             let status = state.status.lock().await;
             if *status == BotStatus::Stopping {
-                drop(status);
-                *state.status.lock().await = BotStatus::Idle;
-                let _ = state.log_tx.send(LogEvent::info("strategy loop stopped"));
-                return;
+                break;
             }
+        }
+
+        // Per-handle enable flag (Phase 2 will toggle this live).
+        if !handle.is_enabled() {
+            interruptible_sleep(&state, handle.scan_interval).await;
+            continue;
         }
 
         // Market hours gate
         if !market_is_open(&state).await {
-            interruptible_sleep(&state, entry_interval).await;
+            interruptible_sleep(&state, handle.scan_interval).await;
             continue;
         }
 
-        let _ = state.log_tx.send(LogEvent::info("[iron-conduit] scan cycle starting"));
+        let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] scan cycle starting")));
 
-        match strategy.scan(&state).await {
+        match handle.strategy.scan(&state).await {
             Ok(signals) if signals.is_empty() => {
-                let _ = state.log_tx.send(LogEvent::info("[iron-conduit] no signals this cycle"));
+                let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] no signals this cycle")));
             }
             Ok(signals) => {
                 for signal in signals {
@@ -127,30 +208,40 @@ pub async fn run_strategy_loop(state: Arc<AppState>) {
                         .with_open_underlyings(&open_underlyings);
                     match guard.check_entry(&signal) {
                         Ok(()) => {
-                            let _ = state.log_tx.send(LogEvent::risk("risk guard passed"));
+                            let _ = state.log_tx.send(LogEvent::risk(format!("[{strategy_id}] risk guard passed")));
 
                             // Check we're Running before submitting
                             let running = *state.status.lock().await == BotStatus::Running;
                             if !running {
-                                let _ = state.log_tx.send(LogEvent::info("not running — skipping order"));
+                                let _ = state.log_tx.send(LogEvent::info(format!("[{strategy_id}] not running — skipping order")));
                                 continue;
                             }
 
-                            submit_signal_orders(&state, &signal).await;
+                            submit_signal_orders(&state, strategy_id, &signal).await;
                         }
                         Err(e) => {
-                            let _ = state.log_tx.send(LogEvent::risk(format!("blocked: {e}")));
+                            let _ = state.log_tx.send(LogEvent::risk(format!("[{strategy_id}] blocked: {e}")));
                         }
                     }
                 }
             }
             Err(e) => {
-                error!("[iron-conduit] scan error: {e}");
-                let _ = state.log_tx.send(LogEvent::error(format!("scan error: {e}")));
+                error!("[{strategy_id}] scan error: {e}");
+                let _ = state.log_tx.send(LogEvent::error(format!("[{strategy_id}] scan error: {e}")));
             }
         }
 
-        interruptible_sleep(&state, entry_interval).await;
+        interruptible_sleep(&state, handle.scan_interval).await;
+    }
+
+    // Last loop out flips status to Idle.
+    let remaining = state.active_strategy_loops.fetch_sub(1, Ordering::SeqCst) - 1;
+    let _ = state.log_tx.send(LogEvent::info(format!(
+        "[{strategy_id}] supervisor exited ({remaining} loop(s) still running)"
+    )));
+    if remaining == 0 {
+        *state.status.lock().await = BotStatus::Idle;
+        let _ = state.log_tx.send(LogEvent::info("all strategy loops stopped"));
     }
 }
 
@@ -164,7 +255,11 @@ async fn interruptible_sleep(state: &AppState, dur: Duration) {
 }
 
 /// Submit orders for all legs in a signal and track the position.
-async fn submit_signal_orders(state: &AppState, signal: &Signal) {
+///
+/// `strategy_id` tags every resulting `OpenPositionMeta` and trade_log row so
+/// downstream attribution (P&L by strategy, UI badges, exit dispatch) can
+/// route correctly. For Forge each signal yields one leg / one position.
+async fn submit_signal_orders(state: &AppState, strategy_id: &'static str, signal: &Signal) {
     let (underlying, legs) = match signal {
         Signal::EnterLong  { symbol, legs } => (symbol.as_str(), legs),
         Signal::EnterShort { symbol, legs } => (symbol.as_str(), legs),
@@ -192,13 +287,14 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
         match orders::submit_limit_order(&state.client, &leg.contract, side, leg.qty, limit_price).await {
             Ok(order) => {
                 let _ = state.log_tx.send(LogEvent::order(format!(
-                    "submitted {} {} {} @ ${:.2} → order id {}",
+                    "[{strategy_id}] submitted {} {} {} @ ${:.2} → order id {}",
                     side, leg.qty, leg.contract, limit_price, order.id
                 )));
 
                 // Log to DB
                 let direction = if leg.contract.contains('C') { "call" } else { "put" };
                 let _ = state.db.insert_trade_log(
+                    strategy_id, None,
                     &leg.contract, underlying, direction, "buy",
                     limit_price, leg.qty as i64,
                     None, None, None, None, None, None, None,
@@ -206,6 +302,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
 
                 // Track position
                 let meta = OpenPositionMeta {
+                    strategy_id,
                     contract:             leg.contract.clone(),
                     underlying:           underlying.to_string(),
                     direction:            direction.to_string(),
@@ -226,7 +323,7 @@ async fn submit_signal_orders(state: &AppState, signal: &Signal) {
             }
             Err(e) => {
                 let _ = state.log_tx.send(LogEvent::error(format!(
-                    "order submit failed for {}: {e}", leg.contract
+                    "[{strategy_id}] order submit failed for {}: {e}", leg.contract
                 )));
             }
         }
@@ -358,11 +455,14 @@ struct OptionQuote {
     #[serde(rename = "bp")] bid: Option<f64>,
 }
 
-// ── Iron Conduit Strategy ─────────────────────────────────────────────────────
+// ── Forge Strategy ────────────────────────────────────────────────────────────
+// Long single-leg calls/puts on confluence + regime. Renamed from "iron conduit"
+// in V2.1 — the old name was misleading because the code does not trade iron
+// condors. The true 4-leg condor is being added as a separate strategy.
 
-pub struct IronConduitStrategy;
+pub struct ForgeStrategy;
 
-impl IronConduitStrategy {
+impl ForgeStrategy {
     pub fn new() -> Self { Self }
 
     async fn fetch_bars(
@@ -440,8 +540,11 @@ impl IronConduitStrategy {
 }
 
 #[async_trait::async_trait]
-impl Strategy for IronConduitStrategy {
+impl Strategy for ForgeStrategy {
+    fn id(&self) -> &'static str { "forge" }
+
     async fn scan(&self, state: &AppState) -> Result<Vec<Signal>, FerrumError> {
+        let strategy_id = self.id();  // tags every scan_result row this cycle writes
         let cfg      = &state.config;
         let rc       = &cfg.strategy.regime;
         let entry    = &cfg.strategy.entry;
@@ -479,7 +582,7 @@ impl Strategy for IronConduitStrategy {
                     let hours_since = (Utc::now() - closed_at).num_minutes() as f64 / 60.0;
                     if hours_since < cooldown_hours {
                         let _ = state.log_tx.send(LogEvent::info(format!(
-                            "[iron-conduit] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
+                            "[forge] {symbol}: cooldown ({:.1}h < {:.1}h) — skip",
                             hours_since, cooldown_hours,
                         )));
                         continue;
@@ -492,14 +595,14 @@ impl Strategy for IronConduitStrategy {
                 match Self::fetch_bars(&state.client, symbol, 90).await {
                     Ok(data) => data,
                     Err(e) => {
-                        let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} bars fetch failed: {e}")));
+                        let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} bars fetch failed: {e}")));
                         continue;
                     }
                 };
 
             if closes.len() < 60 {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: insufficient bar history ({} bars)", closes.len(),
+                    "[forge] {symbol}: insufficient bar history ({} bars)", closes.len(),
                 )));
                 continue;
             }
@@ -513,7 +616,7 @@ impl Strategy for IronConduitStrategy {
                 Some(s) => s,
                 None => {
                     let _ = state.log_tx.send(LogEvent::warn(format!(
-                        "[iron-conduit] {symbol}: snapshot failed",
+                        "[forge] {symbol}: snapshot failed",
                     )));
                     continue;
                 }
@@ -523,13 +626,13 @@ impl Strategy for IronConduitStrategy {
             let ctx = match Self::make_bar_context(&closes, &highs, &lows, &opens, &volumes) {
                 Some(c) => c,
                 None => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol}: bar context failed")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol}: bar context failed")));
                     continue;
                 }
             };
 
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
+                "[forge] {symbol}: regime={} ema9={:.2} ema20={:.2} rsi={:.1} adx={:.1} bb_width={:.1}%",
                 snap.regime, snap.ema9, snap.ema20, snap.rsi, snap.adx.adx,
                 snap.bbands.width * 100.0,
             )));
@@ -542,10 +645,10 @@ impl Strategy for IronConduitStrategy {
                 None => {
                     // Choppy regime and allow_choppy = false
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol}: choppy regime — no trade (allow_choppy=false)",
+                        "[forge] {symbol}: choppy regime — no trade (allow_choppy=false)",
                     )));
                     let _ = state.db.insert_scan_result(
-                        symbol, &snap.regime.to_string(), 0, None, "choppy",
+                        strategy_id, symbol, &snap.regime.to_string(), 0, None, "choppy",
                     ).await;
                     continue;
                 }
@@ -565,16 +668,16 @@ impl Strategy for IronConduitStrategy {
             };
 
             let _ = state.log_tx.send(LogEvent::info(format!(
-                "[iron-conduit] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
+                "[forge] {symbol}: score={score}/{max_score} min={min_score} dir={dir_str} regime={}",
                 snap.regime,
             )));
 
             if score < min_score {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: score {score} < min {min_score} — skip",
+                    "[forge] {symbol}: score {score} < min {min_score} — skip",
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "below_threshold",
                 ).await;
                 continue;
@@ -591,10 +694,10 @@ impl Strategy for IronConduitStrategy {
                 };
                 if vetoed {
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
+                        "[forge] {symbol}: extreme proximity veto ({dir_str} near 20d extreme) — skip",
                     )));
                     let _ = state.db.insert_scan_result(
-                        symbol, &snap.regime.to_string(), score as i32,
+                        strategy_id, symbol, &snap.regime.to_string(), score as i32,
                         Some(dir_str), "extreme_proximity",
                     ).await;
                     continue;
@@ -624,7 +727,7 @@ impl Strategy for IronConduitStrategy {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} contracts fetch failed: {e}")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} contracts fetch failed: {e}")));
                     continue;
                 }
             };
@@ -652,12 +755,12 @@ impl Strategy for IronConduitStrategy {
 
             if filtered_contracts.is_empty() {
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] {symbol}: no contracts passed DTE/OI filter \
+                    "[forge] {symbol}: no contracts passed DTE/OI filter \
                      ({total_returned} returned by Alpaca, DTE {}-{}, OI≥{})",
                     entry.dte_min, entry.dte_max, liq.min_open_interest,
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "no_contracts",
                 ).await;
                 continue;
@@ -679,7 +782,7 @@ impl Strategy for IronConduitStrategy {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = state.log_tx.send(LogEvent::warn(format!("[iron-conduit] {symbol} snapshots fetch failed: {e}")));
+                    let _ = state.log_tx.send(LogEvent::warn(format!("[forge] {symbol} snapshots fetch failed: {e}")));
                     continue;
                 }
             };
@@ -729,7 +832,7 @@ impl Strategy for IronConduitStrategy {
 
                 if !iv_engine.is_buyable(iv_result.iv_rank) {
                     let _ = state.log_tx.send(LogEvent::info(format!(
-                        "[iron-conduit] {symbol} {contract}: IV rank {:.1} too high — skip",
+                        "[forge] {symbol} {contract}: IV rank {:.1} too high — skip",
                         iv_result.iv_rank,
                     )));
                     continue;
@@ -778,11 +881,11 @@ impl Strategy for IronConduitStrategy {
                 };
 
                 let _ = state.log_tx.send(LogEvent::info(format!(
-                    "[iron-conduit] SIGNAL {symbol} {contract} dir={dir_str} \
+                    "[forge] SIGNAL {symbol} {contract} dir={dir_str} \
                      mid=${mid:.2} score={score}/{max_score} size={size_factor:.2} delta_dist={delta_score:.3} oi={oi:.0} qty={qty}",
                 )));
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "entered",
                 ).await;
 
@@ -798,7 +901,7 @@ impl Strategy for IronConduitStrategy {
                 });
             } else {
                 let _ = state.db.insert_scan_result(
-                    symbol, &snap.regime.to_string(), score as i32,
+                    strategy_id, symbol, &snap.regime.to_string(), score as i32,
                     Some(dir_str), "no_contracts",
                 ).await;
             }

@@ -24,6 +24,18 @@ export interface Position {
   unrealized_pl: number;
   unrealized_plpc: number;
   opened_at: string;
+  /** V2.1 Phase 2: which strategy owns the position. `null` for legacy /
+   *  manual positions opened outside the registry. */
+  strategy_id?: string | null;
+}
+
+export interface StrategyInfo {
+  id: string;
+  enabled: boolean;
+  scan_interval_secs: number;
+  open_positions: number;
+  signals_today: number;
+  scans_today: number;
 }
 
 export interface Fill {
@@ -64,4 +76,11 @@ export interface ApiOkResponse {
 export interface ModeResponse {
   ok: boolean;
   restart_required: boolean;
+}
+
+export interface TickerEntry {
+  symbol: string;
+  price: number;
+  /** Day-change as a fraction, e.g. 0.0125 = +1.25 %. */
+  change_pct: number;
 }

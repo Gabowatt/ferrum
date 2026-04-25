@@ -1,0 +1,17 @@
+[package]
+name    = "ferrum-report"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ferrum-report"
+path = "src/main.rs"
+
+# Read-only consumer of the daemon's SQLite DB. Lives in the workspace so
+# the schema stays in sync, but pulls only sqlx + chrono — no daemon code,
+# so there's zero risk of running it accidentally interfering with a live
+# daemon (it opens the pool with max_connections = 1).
+[dependencies]
+tokio    = { workspace = true }
+sqlx     = { workspace = true }
+chrono   = { workspace = true }

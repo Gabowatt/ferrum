@@ -395,8 +395,18 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ferrum-report"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

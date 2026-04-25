@@ -30,16 +30,23 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), FerrumError> {
-        // Core tables
+        // Core tables.
+        //
+        // V2.1 multi-strategy attribution: `strategy_id` (default 'forge')
+        // tags every fill / trade / scan with the strategy that produced it.
+        // Defaults exist so legacy code paths that don't yet pass an explicit
+        // id keep working; later commits in V2.1 will thread the value
+        // through writers.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS fills (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol    TEXT    NOT NULL,
-                side      TEXT    NOT NULL,
-                qty       REAL    NOT NULL,
-                price     REAL    NOT NULL,
-                timestamp TEXT    NOT NULL,
-                order_id  TEXT    NOT NULL UNIQUE
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol      TEXT    NOT NULL,
+                side        TEXT    NOT NULL,
+                qty         REAL    NOT NULL,
+                price       REAL    NOT NULL,
+                timestamp   TEXT    NOT NULL,
+                order_id    TEXT    NOT NULL UNIQUE,
+                strategy_id TEXT    NOT NULL DEFAULT 'forge'
             )"
         ).execute(&self.pool).await?;
 
@@ -88,6 +95,9 @@ impl Database {
             )"
         ).execute(&self.pool).await?;
 
+        // `position_id` is nullable. Phase 3 uses it to group the 4 legs of an
+        // iron condor under a single position id; Forge writes it as NULL
+        // (single-leg positions don't need grouping).
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS trade_log (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +114,9 @@ impl Database {
                 delta            REAL,
                 dte              INTEGER,
                 exit_reason      TEXT,
-                pnl              REAL
+                pnl              REAL,
+                strategy_id      TEXT    NOT NULL DEFAULT 'forge',
+                position_id      TEXT
             )"
         ).execute(&self.pool).await?;
 
@@ -112,16 +124,59 @@ impl Database {
         // Useful for diagnosing how close/far the bot is from generating a buy signal.
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS scan_results (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT    NOT NULL,
-                symbol    TEXT    NOT NULL,
-                regime    TEXT    NOT NULL,
-                score     INTEGER NOT NULL,
-                direction TEXT,
-                outcome   TEXT    NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT    NOT NULL,
+                symbol      TEXT    NOT NULL,
+                regime      TEXT    NOT NULL,
+                score       INTEGER NOT NULL,
+                direction   TEXT,
+                outcome     TEXT    NOT NULL,
+                strategy_id TEXT    NOT NULL DEFAULT 'forge'
             )"
         ).execute(&self.pool).await?;
 
+        // ── Upgrade path for existing DBs (V2 → V2.1) ────────────────────────
+        // SQLite has no IF NOT EXISTS for ADD COLUMN, so we inspect the current
+        // schema first and only ALTER when the column is missing. Idempotent
+        // and safe to run on every boot.
+        self.add_column_if_missing(
+            "fills", "strategy_id",
+            "ALTER TABLE fills ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+        self.add_column_if_missing(
+            "trade_log", "strategy_id",
+            "ALTER TABLE trade_log ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+        self.add_column_if_missing(
+            "trade_log", "position_id",
+            "ALTER TABLE trade_log ADD COLUMN position_id TEXT",
+        ).await?;
+        self.add_column_if_missing(
+            "scan_results", "strategy_id",
+            "ALTER TABLE scan_results ADD COLUMN strategy_id TEXT NOT NULL DEFAULT 'forge'",
+        ).await?;
+
+        Ok(())
+    }
+
+    /// Idempotent ADD COLUMN: no-op if `column` already exists on `table`.
+    async fn add_column_if_missing(
+        &self,
+        table:      &str,
+        column:     &str,
+        alter_sql:  &str,
+    ) -> Result<(), FerrumError> {
+        // PRAGMA table_info returns one row per column; the `name` field is the column name.
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(&self.pool).await?;
+        let exists = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == column)
+                .unwrap_or(false)
+        });
+        if !exists {
+            sqlx::query(alter_sql).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -309,23 +364,46 @@ impl Database {
     /// outcome: "entered" | "below_threshold" | "no_contracts" | "risk_blocked" | "choppy"
     pub async fn insert_scan_result(
         &self,
-        symbol:    &str,
-        regime:    &str,
-        score:     i32,
-        direction: Option<&str>,
-        outcome:   &str,
+        strategy_id: &str,
+        symbol:      &str,
+        regime:      &str,
+        score:       i32,
+        direction:   Option<&str>,
+        outcome:     &str,
     ) -> Result<(), FerrumError> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO scan_results (timestamp, symbol, regime, score, direction, outcome)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scan_results (timestamp, symbol, regime, score, direction, outcome, strategy_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&now).bind(symbol).bind(regime).bind(score).bind(direction).bind(outcome)
+        .bind(&now).bind(symbol).bind(regime).bind(score).bind(direction).bind(outcome).bind(strategy_id)
         .execute(&self.pool).await?;
         Ok(())
     }
 
+    /// V2.1 Phase 2: scan tally for a strategy since UTC midnight today.
+    /// Returns `(total_scans, signals_entered)` — used by the dashboard's
+    /// strategies panel to show daily activity per strategy.
+    pub async fn scan_tally_today(&self, strategy_id: &str) -> Result<(u32, u32), FerrumError> {
+        let midnight = Utc::now().date_naive().and_hms_opt(0, 0, 0)
+            .map(|dt| chrono::DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc).to_rfc3339())
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let row = sqlx::query(
+            "SELECT
+               COUNT(*) AS total,
+               SUM(CASE WHEN outcome = 'entered' THEN 1 ELSE 0 END) AS entered
+             FROM scan_results
+             WHERE strategy_id = ? AND timestamp >= ?",
+        )
+        .bind(strategy_id).bind(&midnight)
+        .fetch_one(&self.pool).await?;
+        let total:   i64 = row.try_get("total").unwrap_or(0);
+        let entered: i64 = row.try_get("entered").unwrap_or(0);
+        Ok((total as u32, entered as u32))
+    }
+
     /// Most-recent scan results per symbol (latest N rows total, newest first).
+    #[allow(dead_code)]
     pub async fn recent_scan_results(&self, limit: i64) -> Result<Vec<ScanResult>, FerrumError> {
         let rows = sqlx::query(
             "SELECT timestamp, symbol, regime, score, direction, outcome
@@ -344,8 +422,14 @@ impl Database {
 
     // ── Trade log ─────────────────────────────────────────────────────────────
 
+    /// Insert a trade log entry. `strategy_id` tags the row with the strategy
+    /// that opened/closed the position; `position_id` is reserved for Phase 3
+    /// to group the 4 legs of an iron condor under a single id (Forge passes
+    /// `None` since its positions are single-leg).
     pub async fn insert_trade_log(
         &self,
+        strategy_id:     &str,
+        position_id:     Option<&str>,
         contract_symbol: &str,
         underlying:      &str,
         direction:       &str,
@@ -364,13 +448,15 @@ impl Database {
         sqlx::query(
             "INSERT INTO trade_log
              (contract_symbol, underlying, direction, action, timestamp, price, quantity,
-              confluence_score, regime, iv_rank, delta, dte, exit_reason, pnl)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              confluence_score, regime, iv_rank, delta, dte, exit_reason, pnl,
+              strategy_id, position_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(contract_symbol).bind(underlying).bind(direction).bind(action)
         .bind(&now).bind(price).bind(quantity)
         .bind(confluence_score).bind(regime).bind(iv_rank).bind(delta)
         .bind(dte).bind(exit_reason).bind(pnl)
+        .bind(strategy_id).bind(position_id)
         .execute(&self.pool).await?;
         Ok(())
     }
