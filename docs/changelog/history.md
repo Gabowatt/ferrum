@@ -397,3 +397,61 @@ Three quality-of-life passes after Phase 2 testing surfaced rough edges.
       zero warnings. Commits: `9817da3` (UX additions),
       `2bb2e6d` (axum 0.7 fix + caption + stretch).
 
+## V2.1 weekly review report — 2026-04-24
+
+Last feature for V2.1 before tagging — turns the eyeball-the-logs
+weekend ritual into a reproducible markdown digest.
+
+- [x] **New `crates/ferrum-report` workspace member.** Single-binary
+      crate (`ferrum-report`) with a tight dep footprint — `tokio`,
+      `sqlx`, `chrono`. No daemon code, no toml parsing; opens the DB
+      with `mode=ro` and `max_connections=1` so it can never step on a
+      live daemon. Args parsed by hand to avoid pulling in clap.
+- [x] **CLI surface.** `ferrum-report [--week=YYYY-Www] [--db=<path>]
+      [--out=<dir>]`. Defaults: current ISO week (via
+      `chrono::Utc::now().iso_week()`), `~/.local/share/ferrum/ferrum.db`
+      (the real XDG-style path the daemon writes — TODO previously
+      claimed `~/.ferrum/ferrum.db`, which was wrong), and
+      `docs/reports/`. Output filename uses the Friday-of-week date so
+      the cron entry stays idempotent.
+- [x] **Sections rendered** (all data-driven from the DB, no manual
+      input besides the verdict line):
+  - Headline — scans, signals entered, fills, closed-trade P&L,
+    day-trade budget consumption.
+  - **Why buys were low** — narrative funnel that walks regime gate →
+    score gate → extreme-proximity veto → no-contracts veto →
+    downstream risk caps (sector, max-open, PDT, buying power). Each
+    bullet is templated against the real counts so the prose reads
+    like a human wrote it.
+  - Scan summary by regime + per-symbol table.
+  - Veto + risk-block breakdown — categorised from `log_events.level
+    = 'RISK'` via `CASE WHEN message LIKE …` (sector_cap,
+    max_open_positions, pdt_block, cooldown, cash_reserve,
+    portfolio_risk).
+  - Near-miss table — counts for `score = threshold − 1` per regime,
+    so the operator can see how many signals would convert if a
+    threshold dropped by 1.
+  - Entries + exits — fills-by-day, closed trades with exit reason +
+    P&L, day-trade ledger (with `was_emergency` flag), open
+    positions at end of week.
+  - **PDT-transition notes** — derived inputs for V2.2 Theme B.
+    Counts day-trade slots used, calls out losing day-trades as the
+    "worst-case" PDT scenario, surfaces sector-cap and
+    max-open-positions as the next constraints once PDT is gone, and
+    flags buying-power errors as the future binding ceiling. Closes
+    with the action-items list (config flag, code paths to gate,
+    dashboard counter handling).
+- [x] **Verdict placeholder.** Top of every report has a
+      `> _operator: write a one-line verdict here before tuning._`
+      blockquote. Intentionally not auto-filled — the verdict is the
+      one thing the report can't write itself.
+- [x] **First real run** — `cargo run -p ferrum-report` after Friday's
+      close. 2026-W17 covers Mon 04-20 → Fri 04-24. Headline numbers
+      cross-checked against direct DB queries (20,590 scans, 302
+      entered, 2/2 day trades, $-5.00 realised). Output committed at
+      [`docs/reports/2026-04-24.md`](../reports/2026-04-24.md).
+- [x] **TODO updated** — V2.1 weekly-report tasks ticked off; the
+      cron-scheduling line stays in V2.2 Theme A's homelab checklist
+      (depends on the homelab being online).
+- [x] Build clean (`cargo build --workspace`), zero warnings.
+

@@ -4,11 +4,10 @@
 
 ## Status
 
-- **Active branch**: `V2.1` — wrapping up. One feature still to land
-  (the weekly review report), then tagging `v2.1.0`. Target tag is
-  after the **2026-04-24** close if the report is in by then; slip a
-  few days otherwise — the report has to actually fire on Friday for
-  us to trust it before we tag.
+- **Active branch**: `V2.1` — feature-complete. Weekly review report
+  shipped and ran cleanly against this week's data
+  ([`docs/reports/2026-04-24.md`](docs/reports/2026-04-24.md)).
+  Tagging `v2.1` from `main` after the merge.
 - **Last shipped**: V2 web dashboard + tuning fixes merged to `main`.
 - **Last paper run**: 2026-04-22 — 0 entries again. Hoping for a fill
   this week so the new dashboard (strategy stats, badges, ticker)
@@ -39,32 +38,29 @@ that drives the weekend tuning pass. Replaces the current eyeball-scan
 of logs. First run target: **Friday 2026-04-24** after close so we
 have real output to read against before tagging.
 
-- [ ] **Format**: markdown file emitted to `docs/reports/YYYY-MM-DD.md`,
-      one per Friday. Same file overwrites if re-run that day.
-- [ ] **Sections**:
-  - Scan summary — total scans, by symbol, by regime, hit rate.
-  - Veto breakdown — count by reason (extreme_proximity, sector cap,
-    min_confluence, IV rank gate, etc.). The "why didn't we enter"
-    column.
-  - Near-miss table — symbols that scored within 1 point of
-    `min_confluence_score` but were vetoed; what would have changed
-    if the threshold were 1 lower.
-  - Entries + exits — fills, P&L per trade, P&L per strategy,
-    win rate, average hold, average winner / average loser.
-  - Regime distribution — what % of scans saw TrendingUp /
-    TrendingDown / RangeBound / Choppy.
-  - One-line "verdict" the operator writes by hand at the top after
-    reading, before tuning.
-- [ ] **Implementation**: new `ferrum-report` CLI binary in the
-      workspace (separate so it doesn't bloat the daemon), reads
-      `~/.ferrum/ferrum.db` directly, takes `--week=YYYY-Www` (default
-      = current ISO week), writes the markdown file.
-- [ ] **First real run**: `cargo run -p ferrum-report` on Friday
-      2026-04-24 after close. Read the output, sanity-check the
-      numbers against the daemon logs, write a verdict by hand. If
-      the report is broken or ugly, fix before tagging.
+- [x] **Format**: markdown file emitted to `docs/reports/YYYY-MM-DD.md`
+      (Friday-of-week date), one per ISO week. Same file overwrites on
+      re-run, idempotent.
+- [x] **Sections**: scan summary (by regime + per symbol), veto + risk
+      breakdown, near-miss table, entries + exits, day-trade ledger,
+      open-at-EOW, plus a derived "Why buys were low" narrative and
+      PDT-transition notes. Verdict line stays as a placeholder for the
+      operator to fill in by hand.
+- [x] **Implementation**: `crates/ferrum-report` workspace member.
+      Read-only sqlx pool (`max_connections=1`, `mode=ro`) so it can't
+      step on a live daemon. Reads `~/.local/share/ferrum/ferrum.db` by
+      default; `--week=YYYY-Www` and `--db=` / `--out=` overrides.
+- [x] **First real run**: 2026-04-24 — see
+      [`docs/reports/2026-04-24.md`](reports/2026-04-24.md). Numbers
+      cross-checked against the daemon log scans.
 - [ ] **Schedule (deferred to V2.2)**: cron entry on the homelab once
       it's deployed — Friday 16:30 ET. Until then, manual invocation.
+
+> Note on DB path: the daemon actually writes
+> `~/.local/share/ferrum/ferrum.db` (XDG-style), not `~/.ferrum/ferrum.db`
+> as earlier sections of this file said. The report binary defaults to
+> the real path; cleaning up the docs reference is a low-priority
+> follow-up.
 
 ### Tag + branch out
 

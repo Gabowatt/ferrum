@@ -2,6 +2,7 @@
 members = [
     "crates/ferrum-core",
     "crates/ferrum-daemon",
+    "crates/ferrum-report",
     "crates/ferrum-web",
 ]
 resolver = "2"
